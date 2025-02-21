@@ -1,44 +1,28 @@
-from torch.optim import AdamW
-from transformers import get_scheduler
-from sentence_transformers import losses, evaluation
+class CustomEvaluator(evaluation.SentenceEvaluator):
+    def __init__(self, model, dataloader, loss_fn):
+        super(CustomEvaluator, self).__init__()
+        self.model = model
+        self.dataloader = dataloader
+        self.loss_fn = loss_fn
 
-# 학습 파라미터 설정
-epochs = 30  # Early Stopping을 고려한 넉넉한 값
-learning_rate = 3e-5
-weight_decay = 0.01
-warmup_ratio = 0.06  # 전체 스텝의 6%를 warmup으로 설정
-total_training_steps = epochs * 144  # steps_per_epoch = 144
-warmup_steps = int(total_training_steps * warmup_ratio)
+    def __call__(self, model, output_path, epoch, steps):
+        model.eval()  # 평가 모드
+        total_loss = 0.0
+        num_batches = 0
 
-# Optimizer 설정
-optimizer = AdamW(emb_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        with torch.no_grad():
+            for batch in self.dataloader:
+                anchor, positive, negative, margin = batch
+                anchor_emb = model.encode(anchor, convert_to_tensor=True)
+                positive_emb = model.encode(positive, convert_to_tensor=True)
+                negative_emb = model.encode(negative, convert_to_tensor=True)
+                loss = self.loss_fn(anchor_emb, positive_emb, negative_emb, margin)
+                total_loss += loss.item()
+                num_batches += 1
 
-# Learning Rate Scheduler 설정
-scheduler = get_scheduler(
-    name="linear",
-    optimizer=optimizer,
-    num_warmup_steps=warmup_steps,
-    num_training_steps=total_training_steps
-)
+        avg_loss = total_loss / num_batches
+        print(f"Evaluation Loss at Epoch {epoch}, Step {steps}: {avg_loss}")
 
-# Early Stopping을 위한 Evaluator 설정
-evaluator = evaluation.EmbeddingSimilarityEvaluator(
-    sentences1=val_sentences1,  # 평가 데이터 (문장 1 리스트)
-    sentences2=val_sentences2,  # 평가 데이터 (문장 2 리스트)
-    scores=val_labels,  # 유사도 레이블 (0~1 사이 값)
-    batch_size=128
-)
+        model.train()  # 평가 종료 후 다시 훈련 모드 설정 (★ 추가)
 
-# SentenceTransformer 모델 학습
-emb_model.fit(
-    train_objectives=[(train_dataloader, train_loss)],
-    evaluator=evaluator,  # Early Stopping을 위해 필요
-    epochs=epochs,
-    optimizer_class=AdamW,
-    optimizer_params={'lr': learning_rate, 'eps': 1e-8, 'weight_decay': weight_decay},
-    scheduler=scheduler,
-    warmup_steps=warmup_steps,
-    evaluation_steps=144,  # 한 epoch마다 평가
-    early_stopping_patience=5,  # 5번 연속 개선되지 않으면 중단
-    output_path="./best_model"  # 최적 모델 저장 경로
-)
+        return -avg_loss
