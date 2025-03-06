@@ -1,82 +1,49 @@
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from transformers import AutoModel, AutoTokenizer, AdamW
 
-# 모델 정의
-class MultiHeadLinearClassifier(nn.Module):
-    def __init__(self, pretrained_model_name, num_classes_level_1, num_classes_level_2):
-        super(MultiHeadLinearClassifier, self).__init__()
-        self.model = AutoModel.from_pretrained(pretrained_model_name)
-        embedding_dim = self.model.config.hidden_size
-        self.heads = nn.ModuleDict({
-            'level_1': nn.Linear(embedding_dim, num_classes_level_1),
-            'level_2': nn.Linear(embedding_dim, num_classes_level_2)
-        })
+# 데이터셋 클래스 정의
+class TextClassificationDataset(Dataset):
+    def __init__(self, texts, labels_l1, labels_l2, tokenizer, max_length=128):
+        self.texts = texts
+        self.labels_l1 = labels_l1
+        self.labels_l2 = labels_l2
+        self.tokenizer = tokenizer
 
-    def forward(self, input_ids, attention_mask):
-        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-        embeddings = outputs.last_hidden_state.mean(dim=1)
-        logits = {level: head(embeddings) for level, head in self.heads.items()}
-        return logits
+    def __len__(self):
+        return len(self.texts)
 
-# 학습 및 평가 루프
-def train(model, dataloader, optimizer, criterion, device):
-    model.train()
-    total_loss = 0
-    for batch in dataloader:
-        input_ids, attention_mask, labels_l1, labels_l2 = [x.to(device) for x in batch]
-        optimizer.zero_grad()
-        logits = model(input_ids, attention_mask)
-        loss_l1 = criterion(logits['level_1'], labels_l1)
-        loss_l2 = criterion(logits['level_2'], labels_l2)
-        loss = loss_l1 + 0.5 * loss_l2
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-    return total_loss / len(dataloader)
+    def __getitem__(self, idx):
+        encoding = self.tokenizer(
+            self.texts[idx],
+            truncation=True,
+            padding='max_length',
+            max_length=128,
+            return_tensors='pt'
+        )
+        item = {key: val.squeeze(0) for key, val in encoding.items()}
+        item = {
+            'input_ids': encoding['input_ids'],
+            'attention_mask': encoding['attention_mask'],
+            'labels_level_1': torch.tensor(self.labels_level_1[idx], dtype=torch.long),
+            'labels_level_2': torch.tensor(self.labels_level_2[idx], dtype=torch.long)
+        }
+        return item
 
-def evaluate(model, dataloader, device):
-    model.eval()
-    correct_l1, correct_l2, total = 0, 0, 0
-    with torch.no_grad():
-        for batch in dataloader:
-            input_ids, attention_mask, labels_l1, labels_l2 = [x.to(device) for x in batch]
-            logits = model(input_ids, attention_mask)
-            preds_l1 = logits['level_1'].argmax(dim=1)
-            preds_l2 = logits['level_2'].argmax(dim=1)
-            correct_l1 += (pred_l1 == labels_l1).sum().item()
-            correct_l2 += (pred_l2 == labels_l2).sum().item()
-            total += labels_l1.size(0)
-    acc_l1 = correct_l1 / total
-    acc_l2 = correct_l2 / total
-    return acc_l1, acc_l2
+# Tokenizer 및 데이터 준비 예시
+tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
 
-# 하이퍼파라미터 및 환경 세팅
-pretrained_model_name = 'sentence-transformers/all-MiniLM-L6-v2'
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-num_classes_level_1 = 10
-num_classes_level_2 = 30
-model = MultiHeadLinearClassifier(pretrained_model_name, num_classes_level_1, num_classes_level_2).to(device)
+train_texts = ["텍스트 예시1", "텍스트 예시2"]
+train_labels_level_1 = [0, 1]  # 예시 레이블
+train_labels_level_2 = [3, 7]
 
-optimizer = AdamW(model.parameters(), lr=2e-5)
-criterion = nn.CrossEntropyLoss()
+train_dataset = TextClassificationDataset(train_texts, train_labels_level_1, train_labels_level_2, tokenizer)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 
-# Training loop
-num_epochs = 3
-for epoch in range(num_epochs):
-    model.train()
-    total_loss = 0
-    for batch in train_dataloader:
-        input_ids, attention_mask, labels_l1, labels_l2 = [x.to(device) for x in batch]
-        optimizer.zero_grad()
-        logits = model(input_ids, attention_mask)
-        loss_l1 = criterion(logits['level_1'], labels_l1)
-        loss_l2 = criterion(logits['level_2'], labels_l2)
-        loss = loss_l1 + 0.5 * loss_l2  # 가중치 조정 가능
-        loss.backward()
-        optimizer.step()
-
-    # 평가 예시
-    val_acc_l1, val_acc_l2 = evaluate(model, val_dataloader, device)
-    print(f"Validation Acc Level 1: {acc_l1:.4f}, Level 2: {acc_l2:.4f}")
+# 사용 예시
+for batch in train_loader:
+    input_ids = batch['input_ids'].to(device)
+    attention_mask = batch['attention_mask'].to(device)
+    labels_l1 = batch['labels_level_1'].to(device)
+    labels_l2 = batch['labels_level_2'].to(device)
+    # 이제 이 데이터를 학습 loop에 사용 가능
