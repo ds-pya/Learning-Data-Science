@@ -1,42 +1,82 @@
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from transformers import AutoModel, AutoTokenizer, AdamW
 
-def random_false_indices(tensor, n):
-    # False 값을 가진 위치를 찾는다.
-    zero_indices = (tensor == 0).nonzero(as_tuple=False)
-    # False 값의 위치 중에서 랜덤하게 n개를 선택한다. (중복 선택을 피하기 위해 replace=False)
-    if len(zero_indices) >= n:
-        selected_indices = zero_indices[torch.randperm(len(zero_indices))[:n]]
-    else:
-        # False 값의 위치가 n개보다 적을 때는 모든 위치를 반환하거나 경고를 출력
-        print("Warning: There are not enough false values to select n indices.")
-        selected_indices = zero_indices
-    return selected_indices
+# 모델 정의
+class MultiHeadLinearClassifier(nn.Module):
+    def __init__(self, pretrained_model_name, num_classes_level_1, num_classes_level_2):
+        super(MultiHeadLinearClassifier, self).__init__()
+        self.model = AutoModel.from_pretrained(pretrained_model_name)
+        embedding_dim = self.model.config.hidden_size
+        self.heads = nn.ModuleDict({
+            'level_1': nn.Linear(embedding_dim, num_classes_level_1),
+            'level_2': nn.Linear(embedding_dim, num_classes_level_2)
+        })
 
-# 예제
-tensor = torch.tensor([
-    [1, 0, 1, 1, 0],
-    [1, 1, 1, 0, 0],
-    [1, 0, 1, 1, 1],
-    [0, 1, 1, 0, 1]
-], dtype=torch.bool)
+    def forward(self, input_ids, attention_mask):
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        embeddings = outputs.last_hidden_state.mean(dim=1)
+        logits = {level: head(embeddings) for level, head in self.heads.items()}
+        return logits
 
-n = 3  # 랜덤하게 선택할 위치의 수
+# 학습 및 평가 루프
+def train(model, dataloader, optimizer, criterion, device):
+    model.train()
+    total_loss = 0
+    for batch in dataloader:
+        input_ids, attention_mask, labels_l1, labels_l2 = [x.to(device) for x in batch]
+        optimizer.zero_grad()
+        logits = model(input_ids, attention_mask)
+        loss_l1 = criterion(logits['level_1'], labels_l1)
+        loss_l2 = criterion(logits['level_2'], labels_l2)
+        loss = loss_l1 + 0.5 * loss_l2
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+    return total_loss / len(dataloader)
 
-result_indices = random_false_indices(tensor, n)
-print("Randomly selected indices of False values:", result_indices)
+def evaluate(model, dataloader, device):
+    model.eval()
+    correct_l1, correct_l2, total = 0, 0, 0
+    with torch.no_grad():
+        for batch in dataloader:
+            input_ids, attention_mask, labels_l1, labels_l2 = [x.to(device) for x in batch]
+            logits = model(input_ids, attention_mask)
+            preds_l1 = logits['level_1'].argmax(dim=1)
+            preds_l2 = logits['level_2'].argmax(dim=1)
+            correct_l1 += (pred_l1 == labels_l1).sum().item()
+            correct_l2 += (pred_l2 == labels_l2).sum().item()
+            total += labels_l1.size(0)
+    acc_l1 = correct_l1 / total
+    acc_l2 = correct_l2 / total
+    return acc_l1, acc_l2
 
-import torch
+# 하이퍼파라미터 및 환경 세팅
+pretrained_model_name = 'sentence-transformers/all-MiniLM-L6-v2'
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+num_classes_level_1 = 10
+num_classes_level_2 = 30
+model = MultiHeadLinearClassifier(pretrained_model_name, num_classes_level_1, num_classes_level_2).to(device)
 
-def random_select_from_tensor(tensor, indices, N):
-    rows = tensor[indices]  # 인덱스에 해당하는 행 선택
-    col_indices = torch.randint(tensor.size(1), (len(indices), N))
-    selected = rows[torch.arange(len(indices))[:, None], col_indices]
-    return selected
+optimizer = AdamW(model.parameters(), lr=2e-5)
+criterion = nn.CrossEntropyLoss()
 
-# 예제
-tensor = torch.rand(100, 100)  # 100x100의 랜덤 텐서
-indices = torch.randint(0, tensor.size(0), (10,))  # 10개의 랜덤 행 인덱스
-N = 5  # 각 행에서 선택할 원소의 수
+# Training loop
+num_epochs = 3
+for epoch in range(num_epochs):
+    model.train()
+    total_loss = 0
+    for batch in train_dataloader:
+        input_ids, attention_mask, labels_l1, labels_l2 = [x.to(device) for x in batch]
+        optimizer.zero_grad()
+        logits = model(input_ids, attention_mask)
+        loss_l1 = criterion(logits['level_1'], labels_l1)
+        loss_l2 = criterion(logits['level_2'], labels_l2)
+        loss = loss_l1 + 0.5 * loss_l2  # 가중치 조정 가능
+        loss.backward()
+        optimizer.step()
 
-result = random_select_from_tensor(tensor, indices, N)
-print(result)
+    # 평가 예시
+    val_acc_l1, val_acc_l2 = evaluate(model, val_dataloader, device)
+    print(f"Validation Acc Level 1: {acc_l1:.4f}, Level 2: {acc_l2:.4f}")
