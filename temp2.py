@@ -1,161 +1,74 @@
-import tensorflow as tf
-from tensorflow.keras import layers, Model
+import torch
+import torch.nn as nn
+from transformers import AutoModel, AutoTokenizer
+from peft import LoraConfig, get_peft_model
 
-def TabTransformer(user_feature_dim, item_feature_dim, num_categories, embed_dim, num_heads, ff_dim, num_transformer_blocks):
-    # Embedding layers for user and item features
-    user_input = layers.Input(shape=(user_feature_dim,), name="user_feature")
-    item_input = layers.Input(shape=(item_feature_dim,), name="item_feature")
+class LoRAMultiHeadClassifier(nn.Module):
+    def __init__(self, model_name, hidden_dim, num_labels_per_level):
+        super().__init__()
+        
+        # Pre-trained embedding model
+        self.tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
+        self.model = AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
 
-    # Embedding for categorical features
-    user_embeddings = layers.Embedding(input_dim=num_categories, output_dim=embed_dim)(user_input)
-    item_embeddings = layers.Embedding(input_dim=num_categories, output_dim=embed_dim)(item_input)
+        # LoRA 적용
+        self.lora_config = {
+            'r': 8,  # LoRA rank
+            'lora_alpha': 32,
+            'target_modules': ['query', 'key', 'value'],
+            'lora_dropout': 0.1,
+            'bias': 'none',
+        }
+        self.model = self._apply_lora(self.model, self.lora_config)
 
-    # Concatenate embeddings
-    x = layers.Concatenate(axis=1)([user_embeddings, item_embeddings])
-    
-    # Positional Encoding
-    x = layers.LayerNormalization()(x)
-    
-    # Transformer Blocks
-    for _ in range(num_transformer_blocks):
-        # Multi-Head Attention
-        attention_output = layers.MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)(x, x)
-        attention_output = layers.Dropout(0.1)(attention_output)
-        attention_output = layers.Add()([x, attention_output])  # Residual Connection
-        attention_output = layers.LayerNormalization()(attention_output)
+        embedding_dim = self.model.config.hidden_size
 
-        # Feed-Forward Network
-        ffn_output = layers.Dense(ff_dim, activation="relu")(attention_output)
-        ffn_output = layers.Dense(embed_dim)(ffn_output)
-        ffn_output = layers.Dropout(0.1)(ffn_output)
-        x = layers.Add()([attention_output, ffn_output])  # Residual Connection
-        x = layers.LayerNormalization()(x)
+        # Multi-head linear classifier 정의
+        self.heads = nn.ModuleDict({
+            'level_1': nn.Linear(embedding_dim, num_classes_level_1),
+            'level_2': nn.Linear(embedding_dim, num_classes_level_2),
+            # 추가 레벨이 있다면 추가
+        })
 
-    # Pooling layer to summarize sequence
-    x = layers.GlobalAveragePooling1D()(x)
-    
-    # Fully Connected Layer
-    x = layers.Dense(128, activation="relu")(x)
-    x = layers.Dropout(0.2)(x)
-    output = layers.Dense(1, activation="linear", name="output")(x)
+    def _apply_pooling(self, model_output, attention_mask):
+        token_embeddings = model_output.last_hidden_state
+        attention_mask = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        embeddings = torch.sum(token_embeddings * attention_mask, 1) / torch.clamp(attention_mask.sum(1), min=1e-9)
+        return embeddings
 
-    # Create Model
-    model = Model(inputs=[user_input, item_input], outputs=output)
-    return model
+    def _apply_lora(self, model, lora_config):
+        lora_model = model
+        from peft import get_peft_model, LoraConfig, TaskType
+        config = LoraConfig(
+            task_type='FEATURE_EXTRACTION',
+            inference_mode=False,
+            r=lora_config['r'],
+            lora_alpha=32,
+            lora_dropout=lora_config.get('lora_dropout', 0.1),
+            target_modules=['query', 'key', 'value']
+        )
+        model = get_peft_model(model, config=config)
+        return model
 
-# Model Parameters
-user_feature_dim = 10  # e.g., user categorical feature dimensions
-item_feature_dim = 15  # e.g., item categorical feature dimensions
-num_categories = 100   # maximum category value in any feature
-embed_dim = 32         # embedding dimension
-num_heads = 4          # number of attention heads
-ff_dim = 64            # feed-forward network dimension
-num_transformer_blocks = 2  # number of transformer blocks
+    def forward(self, input_ids, attention_mask):
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        embeddings = self._apply_pooling(outputs, attention_mask)
 
-# Build the TabTransformer Model
-tab_transformer_model = TabTransformer(user_feature_dim, item_feature_dim, num_categories, embed_dim, num_heads, ff_dim, num_transformer_blocks)
-
-# Compile the model
-tab_transformer_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-                               loss='mse',  # Mean Squared Error for regression
-                               metrics=[tf.keras.metrics.MeanAbsoluteError()])
-
-# Summary
-tab_transformer_model.summary()
+        logits = {level: head(embeddings) for level, head in self.heads.items()}
+        return logits
 
 
-import tensorflow as tf
-from tensorflow.keras import layers, Model
+# Example usage
+num_classes_level_1 = 10  # 각 계층별 클래스 개수 정의
+num_classes_level_2 = 30
 
-def CORALModel(user_feature_dim, item_feature_dim, num_categories, embed_dim, hidden_dim):
-    # Inputs
-    user_input = layers.Input(shape=(user_feature_dim,), name="user_feature")
-    item_input = layers.Input(shape=(item_feature_dim,), name="item_feature")
+model = YourLoRAMultiHeadModel(num_classes_level_1, num_classes_level_2)
 
-    # Embedding layers
-    user_embeddings = layers.Embedding(input_dim=num_categories, output_dim=embed_dim)(user_input)
-    item_embeddings = layers.Embedding(input_dim=num_categories, output_dim=embed_dim)(item_input)
+# loss example (cross-entropy)
+criterion = nn.CrossEntropyLoss()
 
-    # Concatenate embeddings
-    x = layers.Concatenate(axis=1)([user_embeddings, item_embeddings])
-    x = layers.GlobalAveragePooling1D()(x)
+embeddings = model(input_ids, attention_mask)
+loss_level_1 = criterion(model.heads['level_1'](embeddings), labels_level_1)
+loss_level_2 = criterion(model.heads['level_2'](embeddings), labels_level_2)
 
-    # Fully Connected Layers
-    x = layers.Dense(hidden_dim, activation="relu")(x)
-    x = layers.Dense(hidden_dim, activation="relu")(x)
-
-    # Output for CORAL: k-1 outputs for binary classification
-    coral_outputs = layers.Dense(7, activation="sigmoid", name="coral_output")(x)
-
-    # Model
-    model = Model(inputs=[user_input, item_input], outputs=coral_outputs)
-    return model
-
-# Parameters
-user_feature_dim = 10
-item_feature_dim = 15
-num_categories = 100
-embed_dim = 32
-hidden_dim = 64
-
-# Build CORAL Model
-coral_model = CORALModel(user_feature_dim, item_feature_dim, num_categories, embed_dim, hidden_dim)
-
-# Custom CORAL Loss
-def coral_loss(y_true, y_pred):
-    k = tf.shape(y_pred)[1] + 1
-    y_true = tf.cast(y_true, tf.float32)
-    y_true_expanded = tf.concat([tf.expand_dims(y_true, axis=-1)] * (k - 1), axis=-1)
-    loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=y_true_expanded, logits=y_pred))
-    return loss
-
-# Compile CORAL Model
-coral_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-                    loss=coral_loss,
-                    metrics=['accuracy'])
-
-# Summary
-coral_model.summary()
-
-def CORNModel(user_feature_dim, item_feature_dim, num_categories, embed_dim, hidden_dim):
-    # Inputs
-    user_input = layers.Input(shape=(user_feature_dim,), name="user_feature")
-    item_input = layers.Input(shape=(item_feature_dim,), name="item_feature")
-
-    # Embedding layers
-    user_embeddings = layers.Embedding(input_dim=num_categories, output_dim=embed_dim)(user_input)
-    item_embeddings = layers.Embedding(input_dim=num_categories, output_dim=embed_dim)(item_input)
-
-    # Concatenate embeddings
-    x = layers.Concatenate(axis=1)([user_embeddings, item_embeddings])
-    x = layers.GlobalAveragePooling1D()(x)
-
-    # Fully Connected Layers
-    x = layers.Dense(hidden_dim, activation="relu")(x)
-    x = layers.Dense(hidden_dim, activation="relu")(x)
-
-    # Output for CORN: k-1 outputs for regression
-    corn_outputs = layers.Dense(7, activation="linear", name="corn_output")(x)
-
-    # Model
-    model = Model(inputs=[user_input, item_input], outputs=corn_outputs)
-    return model
-
-# Build CORN Model
-corn_model = CORNModel(user_feature_dim, item_feature_dim, num_categories, embed_dim, hidden_dim)
-
-# Custom CORN Loss
-def corn_loss(y_true, y_pred):
-    y_true = tf.cast(y_true, tf.int32)
-    mask = tf.sequence_mask(y_true, maxlen=tf.shape(y_pred)[1])
-    y_pred_masked = tf.boolean_mask(y_pred, mask)
-    loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(y_pred_masked), logits=y_pred_masked))
-    return loss
-
-# Compile CORN Model
-corn_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-                   loss=corn_loss,
-                   metrics=['mae'])
-
-# Summary
-corn_model.summary()
+loss = loss_level_1 + loss_level_2  # weighted sum도 가능
