@@ -1,49 +1,53 @@
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer
-import torch
+import streamlit as st
+import pandas as pd
+import time
 
-# 데이터셋 클래스 정의
-class TextClassificationDataset(Dataset):
-    def __init__(self, texts, labels_l1, labels_l2, tokenizer, max_length=128):
-        self.texts = texts
-        self.labels_l1 = labels_l1
-        self.labels_l2 = labels_l2
-        self.tokenizer = tokenizer
+# 샘플 데이터
+data = pd.DataFrame({"A": range(1, 101), "B": range(101, 201)})
 
-    def __len__(self):
-        return len(self.texts)
+# 세션 상태 초기화 (첫 실행 시)
+if "processed_data" not in st.session_state:
+    st.session_state.processed_data = pd.DataFrame(columns=["A", "B", "Result"])
+if "progress" not in st.session_state:
+    st.session_state.progress = 0
 
-    def __getitem__(self, idx):
-        encoding = self.tokenizer(
-            self.texts[idx],
-            truncation=True,
-            padding='max_length',
-            max_length=128,
-            return_tensors='pt'
+# UI 요소
+st.title("Streamlit 실시간 데이터 처리")
+st.write("버튼을 누르면 데이터가 청크 단위로 처리됩니다.")
+
+# 처리 시작 버튼
+if st.button("처리 시작"):
+    st.session_state.processed_data = pd.DataFrame(columns=["A", "B", "Result"])  # 초기화
+    st.session_state.progress = 0
+
+    progress_bar = st.progress(0)  # 진행률 바
+    total_chunks = 10  # 몇 번의 반복으로 처리할 것인지 설정
+    chunk_size = len(data) // total_chunks  # 한 번에 처리할 데이터 개수
+
+    for i in range(total_chunks):
+        start_idx = i * chunk_size
+        end_idx = start_idx + chunk_size
+        chunk = data.iloc[start_idx:end_idx].copy()
+
+        # 간단한 가공 예시 (두 컬럼을 더한 값 추가)
+        chunk["Result"] = chunk["A"] + chunk["B"]
+
+        # 세션 상태에 결과 누적
+        st.session_state.processed_data = pd.concat(
+            [st.session_state.processed_data, chunk], ignore_index=True
         )
-        item = {key: val.squeeze(0) for key, val in encoding.items()}
-        item = {
-            'input_ids': encoding['input_ids'],
-            'attention_mask': encoding['attention_mask'],
-            'labels_level_1': torch.tensor(self.labels_level_1[idx], dtype=torch.long),
-            'labels_level_2': torch.tensor(self.labels_level_2[idx], dtype=torch.long)
-        }
-        return item
 
-# Tokenizer 및 데이터 준비 예시
-tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
+        # 진행률 업데이트
+        st.session_state.progress = (i + 1) / total_chunks
+        progress_bar.progress(st.session_state.progress)
 
-train_texts = ["텍스트 예시1", "텍스트 예시2"]
-train_labels_level_1 = [0, 1]  # 예시 레이블
-train_labels_level_2 = [3, 7]
+        # 데이터프레임 업데이트
+        st.dataframe(st.session_state.processed_data)
 
-train_dataset = TextClassificationDataset(train_texts, train_labels_level_1, train_labels_level_2, tokenizer)
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+        time.sleep(0.5)  # 처리 지연을 위한 sleep (실제 작업 시 필요 없음)
 
-# 사용 예시
-for batch in train_loader:
-    input_ids = batch['input_ids'].to(device)
-    attention_mask = batch['attention_mask'].to(device)
-    labels_l1 = batch['labels_level_1'].to(device)
-    labels_l2 = batch['labels_level_2'].to(device)
-    # 이제 이 데이터를 학습 loop에 사용 가능
+    st.success("처리 완료!")
+
+# 결과 표시
+st.subheader("처리 결과")
+st.dataframe(st.session_state.processed_data)
