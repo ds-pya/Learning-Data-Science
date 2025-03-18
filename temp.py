@@ -5,12 +5,14 @@ from transformers import AutoModel, AutoTokenizer
 from torch.utils.data import DataLoader, Dataset
 import onnx
 import onnxruntime
+from tqdm import tqdm
+import numpy as np
 
 # 모델 및 토크나이저 로드
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-# 간단한 커스텀 데이터셋 정의
+# 커스텀 데이터셋 정의
 class CustomDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, max_len=128):
         self.texts = texts
@@ -36,10 +38,17 @@ class CustomDataset(Dataset):
         }
 
 # 샘플 데이터 (실제 데이터로 대체 필요)
-texts = ["이 문장은 예제입니다.", "이 모델은 다국어 지원을 합니다."]
-labels = [0, 1]  # 9개의 클래스 중 일부
-dataset = CustomDataset(texts, labels, tokenizer)
-dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
+train_texts = ["이 문장은 예제입니다.", "이 모델은 다국어 지원을 합니다.", "추가적인 문장 테스트."]
+train_labels = [0, 1, 2]  # 9개의 클래스 중 일부
+
+test_texts = ["이 문장은 검증을 위한 문장입니다.", "다국어 모델 성능을 확인합니다."]
+test_labels = [0, 1]
+
+train_dataset = CustomDataset(train_texts, train_labels, tokenizer)
+test_dataset = CustomDataset(test_texts, test_labels, tokenizer)
+
+train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True)
+test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=False)
 
 # 모델 정의
 class SentenceClassifier(nn.Module):
@@ -73,11 +82,34 @@ model.to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.AdamW(model.fc_layers.parameters(), lr=1e-4)
 
+# 평가 함수 (테스트 데이터셋 Accuracy 계산)
+def evaluate(model, dataloader, device):
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for batch in dataloader:
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            labels = batch["label"].to(device)
+
+            outputs = model(input_ids, attention_mask)
+            predictions = torch.argmax(outputs, dim=1)
+            correct += (predictions == labels).sum().item()
+            total += labels.size(0)
+    
+    accuracy = correct / total if total > 0 else 0
+    return accuracy
+
 # 학습 루프
 num_epochs = 5
-model.train()
 for epoch in range(num_epochs):
-    for batch in dataloader:
+    model.train()
+    epoch_loss = 0
+    num_batches = 0
+    
+    tqdm_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=True)
+    for batch in tqdm_bar:
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["label"].to(device)
@@ -88,7 +120,17 @@ for epoch in range(num_epochs):
         loss.backward()
         optimizer.step()
 
-    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item():.4f}")
+        epoch_loss += loss.item()
+        num_batches += 1
+
+        tqdm_bar.set_postfix(loss=loss.item())  # 실시간 loss 업데이트
+
+    avg_loss = epoch_loss / num_batches
+    print(f"Epoch {epoch+1}/{num_epochs}, Average Loss: {avg_loss:.4f}")
+
+    # 테스트 데이터셋 평가
+    test_accuracy = evaluate(model, test_dataloader, device)
+    print(f"Test Accuracy: {test_accuracy:.4f}")
 
 # 모델을 ONNX로 저장
 dummy_input = {
