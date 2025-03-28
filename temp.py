@@ -1,43 +1,79 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
-class TextClassificationModel(torch.nn.Module):
-    def __init__(self, base_model, num_categories=5, num_leafs_per_category=5, embedding_dim=128, min_samples_leaf=10):
+class PrototypeClassifier(nn.Module):
+    def __init__(self, encoder, hidden_dim, num_classes, num_prototypes_per_class, margin=-0.1, loss_weight=0.1):
         super().__init__()
-        self.base_model = base_model  # Pretrained 모델
-        self.num_categories = num_categories
-        self.num_leafs_per_category = num_leafs_per_category
-        self.embedding_dim = embedding_dim
-        self.min_samples_leaf = min_samples_leaf  # 최소 샘플 횟수 기준
+        self.encoder = encoder  # 사전학습 텍스트 인코더 (LoRA 적용된 상태로 전달)
+        self.hidden_dim = hidden_dim
+        self.num_classes = num_classes
+        self.num_prototypes_per_class = num_prototypes_per_class
+        self.total_prototypes = num_classes * num_prototypes_per_class
+        self.margin = margin
+        self.loss_weight = loss_weight
 
-        # 학습 가능한 카테고리 분점 (leaf들)
-        self.category_embeddings = torch.nn.Parameter(torch.randn(num_categories, num_leafs_per_category, embedding_dim))
+        # (num_classes * num_prototypes_per_class, hidden_dim)
+        self.prototype_embeddings = nn.Parameter(
+            torch.randn(self.total_prototypes, hidden_dim) * 0.02
+        )
 
-        # 각 분점이 positive로 선택된 횟수를 저장하는 카운터 (초기값 0)
-        self.register_buffer("leaf_usage_counts", torch.zeros(num_categories, num_leafs_per_category))
+        # 프로토타입 사용 기록용 변수
+        self.register_buffer('positive_usage', torch.zeros(self.total_prototypes))
+        self.register_buffer('negative_usage', torch.zeros(self.total_prototypes))
 
-    def forward(self, x, is_training=True):
-        x_expanded = x[:, None, None, :]  # (64, 1, 1, 128)
-        category_expanded = self.category_embeddings[None, :, :, :]  # (1, 5, 5, 128)
+    def forward(self, input_ids, attention_mask, labels=None):
+        # [B, hidden_dim]
+        with torch.no_grad():  # LoRA 적용된 인코더의 경우 fine-tune 시 여기 해제
+            hidden = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:, 0]
 
-        # 코사인 유사도 계산
-        cosine_sim = F.cosine_similarity(x_expanded, category_expanded, dim=-1)  # (64, 5, 5)
+        # 거리 계산: [B, total_prototypes]
+        dists = torch.cdist(hidden, self.prototype_embeddings)  # Euclidean
+        sims = -dists  # 유사도는 마이너스 거리
 
-        # **학습 중**에는 선택된 분점(leaf) 카운트 업데이트
-        if is_training:
-            with torch.no_grad():
-                _, max_indices = torch.max(cosine_sim, dim=2)  # (64, 5) 각 카테고리에서 가장 높은 유사도를 가진 leaf index
-                for category_idx in range(self.num_categories):
-                    leaf_counts = torch.bincount(max_indices[:, category_idx], minlength=self.num_leafs_per_category)
-                    self.leaf_usage_counts[category_idx] += leaf_counts.float()
+        # 카테고리별로 가장 가까운 프로토타입만 선택
+        sims_per_class = sims.view(-1, self.num_classes, self.num_prototypes_per_class)
+        topk_sims, topk_indices = sims_per_class.max(dim=2)  # [B, num_classes]
 
-        # **평가 시**에는 min_samples_leaf 기준으로 필터링
-        if not is_training:
-            valid_leaves = self.leaf_usage_counts >= self.min_samples_leaf  # (5,5) Boolean mask
-            valid_cosine_sim = cosine_sim.clone()
-            valid_cosine_sim[~valid_leaves[None, :, :]] = -float("inf")  # 무효 leaf는 제거
-            cosine_sim_max, _ = torch.max(valid_cosine_sim, dim=2)  # (64, 5)
-        else:
-            cosine_sim_max, _ = torch.max(cosine_sim, dim=2)  # (64, 5)
+        output = topk_sims  # [B, num_classes]
 
-        return cosine_sim_max
+        if labels is None:
+            return output  # inference
+
+        # margin filtering (contrastive learning)
+        batch_size = labels.size(0)
+        correct_class_scores = output[torch.arange(batch_size), labels]
+        predicted_labels = output.argmax(dim=1)
+        predicted_scores = output[torch.arange(batch_size), predicted_labels]
+
+        margins = correct_class_scores - predicted_scores
+        mask = margins > self.margin  # True: 학습 대상
+
+        if mask.sum() == 0:
+            return output, torch.tensor(0.0, requires_grad=True, device=output.device)
+
+        filtered_output = output[mask]
+        filtered_labels = labels[mask]
+
+        # cross-entropy loss
+        ce_loss = F.cross_entropy(filtered_output, filtered_labels)
+
+        # prototype dispersion loss
+        proto_norm = F.normalize(self.prototype_embeddings, p=2, dim=1)
+        proto_distances = 1 - torch.matmul(proto_norm, proto_norm.T)
+        dispersion_loss = -proto_distances.mean()
+
+        total_loss = ce_loss + self.loss_weight * dispersion_loss
+
+        # 사용 기록 업데이트
+        with torch.no_grad():
+            flat_indices = topk_indices.view(-1)  # B * num_classes
+            for i in range(batch_size):
+                for c in range(self.num_classes):
+                    proto_id = c * self.num_prototypes_per_class + topk_indices[i, c].item()
+                    if c == labels[i].item():
+                        self.positive_usage[proto_id] += 1
+                    elif c == predicted_labels[i].item() and predicted_labels[i] != labels[i]:
+                        self.negative_usage[proto_id] += 1
+
+        return output, total_loss
