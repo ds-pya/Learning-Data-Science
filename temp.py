@@ -1,25 +1,47 @@
-def prune_prototypes(model: TAEModel):
-    """
-    positive/negative 사용 통계를 바탕으로 마스킹을 적용하는 pruning 함수
-    """
-    pos = model.positive_usage
-    neg = model.negative_usage
-    keep = torch.ones_like(pos).bool()
+def train(model, dataloader, optimizer, device, num_epochs=10, prune_every=3):
+    model.to(device)
+    for epoch in range(1, num_epochs + 1):
+        model.train()
+        total_loss = 0.0
+        total_correct = 0
+        total_count = 0
 
-    for i in range(model.total_prototypes):
-        pos_count = pos[i].item()
-        neg_count = neg[i].item()
-        if pos_count <= model.prune_threshold:
-            keep[i] = False
-        elif pos_count > 0 and (neg_count / pos_count) >= model.prune_ratio:
-            keep[i] = False
+        for batch in dataloader:
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].to(device)
 
-    model.prototype_mask = keep  # [P] boolean mask
-    print(f"[Pruning] Kept {keep.sum().item()} / {len(keep)} prototypes")
+            optimizer.zero_grad()
+            scores, loss = model(input_ids, attention_mask, labels)
+            loss.backward()
+            optimizer.step()
 
-def reset_prototype_usage(model: TAEModel):
-    """
-    사용 통계 초기화
-    """
-    model.positive_usage.zero_()
-    model.negative_usage.zero_()
+            total_loss += loss.item() * input_ids.size(0)
+            preds = scores.argmax(dim=1)
+            total_correct += (preds == labels).sum().item()
+            total_count += input_ids.size(0)
+
+        avg_loss = total_loss / total_count
+        acc = total_correct / total_count
+
+        print(f"[Epoch {epoch}] Loss: {avg_loss:.4f}, Acc: {acc:.4f}")
+
+        # pruning 주기마다 실행
+        if epoch % prune_every == 0:
+            prune_prototypes(model)
+            reset_prototype_usage(model)
+
+# 예: BERT tokenizer와 함께 사용할 수 있는 dataloader
+# dataloader는 {'input_ids', 'attention_mask', 'labels'} 포함된 batch 반환 가정
+
+from transformers import AdamW
+
+model = TAEModel(encoder=your_bert_encoder,
+                 hidden_dim=384,
+                 num_classes=10,
+                 num_prototypes_per_class=5,
+                 taxonomy_distance_matrix=your_taxonomy_weight_matrix)
+
+optimizer = AdamW(model.parameters(), lr=2e-5)
+
+train(model, dataloader=train_dataloader, optimizer=optimizer, device='cuda', num_epochs=10)
