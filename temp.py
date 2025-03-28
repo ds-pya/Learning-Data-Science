@@ -1,30 +1,44 @@
-def prune_prototypes(model: TAEModel):
-    """
-    모델 내부의 positive/negative 사용 통계를 기반으로
-    프로토타입을 pruning합니다.
-    """
-    pos = model.positive_usage
-    neg = model.negative_usage
-    keep_mask = torch.ones_like(pos).bool()
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-    for i in range(model.total_prototypes):
-        pos_count = pos[i].item()
-        neg_count = neg[i].item()
-        # 조건 1: 긍정 사용이 너무 적음
-        if pos_count <= model.prune_threshold:
-            keep_mask[i] = False
-        # 조건 2: 부정 사용이 과도함 (비율 기반)
-        elif pos_count > 0 and (neg_count / pos_count) >= model.prune_ratio:
-            keep_mask[i] = False
+class MultiHeadPooling(nn.Module):
+    def __init__(self, hidden_dim, num_heads):
+        super().__init__()
+        self.attn = nn.Linear(hidden_dim, num_heads)
 
-    # 실제 pruning: 학습 가능한 파라미터로 다시 생성
-    keep_indices = torch.where(keep_mask)[0]
-    pruned_embeddings = model.prototype_embeddings.data[keep_indices]
+    def forward(self, hidden_states):  # [B, L, H]
+        attn_scores = self.attn(hidden_states)  # [B, L, K]
+        attn_scores = F.softmax(attn_scores, dim=1)
+        out = torch.einsum('blh,blk->bkh', hidden_states, attn_scores)  # [B, K, H]
+        return out
 
-    # 프로토타입 수 업데이트
-    model.prototype_embeddings = nn.Parameter(pruned_embeddings)
-    model.total_prototypes = len(keep_indices)
-    model.positive_usage = model.positive_usage[keep_indices]
-    model.negative_usage = model.negative_usage[keep_indices]
+class TAEModel(nn.Module):
+    def __init__(self, encoder, hidden_dim, num_classes, num_prototypes_per_class,
+                 margin=-0.1, disp_weight=0.1, align_weight=0.1, num_heads=3,
+                 prune_threshold=3, prune_ratio=5.0, taxonomy_distance_matrix=None):
+        super().__init__()
+        self.encoder = encoder
+        self.hidden_dim = hidden_dim
+        self.num_classes = num_classes
+        self.num_prototypes_per_class = num_prototypes_per_class
+        self.total_prototypes = num_classes * num_prototypes_per_class
 
-    print(f"Pruned to {len(keep_indices)} prototypes.")
+        self.prototype_embeddings = nn.Parameter(torch.randn(self.total_prototypes, hidden_dim) * 0.02)
+        self.pooler = MultiHeadPooling(hidden_dim, num_heads)
+
+        self.margin = margin
+        self.disp_weight = disp_weight
+        self.align_weight = align_weight
+        self.num_heads = num_heads
+        self.prune_threshold = prune_threshold
+        self.prune_ratio = prune_ratio
+
+        self.register_buffer('positive_usage', torch.zeros(self.total_prototypes))
+        self.register_buffer('negative_usage', torch.zeros(self.total_prototypes))
+        self.register_buffer('prototype_mask', torch.ones(self.total_prototypes).bool())
+
+        if taxonomy_distance_matrix is None:
+            self.register_buffer('taxonomy_dist', torch.ones(self.total_prototypes, self.total_prototypes))
+        else:
+            self.register_buffer('taxonomy_dist', taxonomy_distance_matrix)
