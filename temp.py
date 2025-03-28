@@ -1,44 +1,78 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+def forward(self, input_ids, attention_mask, labels=None):
+    B = input_ids.size(0)
+    P = self.total_prototypes
+    C = self.num_classes
+    K = self.num_heads
 
-class MultiHeadPooling(nn.Module):
-    def __init__(self, hidden_dim, num_heads):
-        super().__init__()
-        self.attn = nn.Linear(hidden_dim, num_heads)
+    # 1. 텍스트 인코딩
+    hidden_states = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state  # [B, L, H]
+    semantic_vecs = self.pooler(hidden_states)  # [B, K, H]
+    sem_norm = F.normalize(semantic_vecs, dim=2)
 
-    def forward(self, hidden_states):  # [B, L, H]
-        attn_scores = self.attn(hidden_states)  # [B, L, K]
-        attn_scores = F.softmax(attn_scores, dim=1)
-        out = torch.einsum('blh,blk->bkh', hidden_states, attn_scores)  # [B, K, H]
-        return out
+    # 2. cosine 유사도 계산
+    proto_norm = F.normalize(self.prototype_embeddings, dim=1)  # [P, H]
+    sims = torch.matmul(sem_norm, proto_norm.T)  # [B, K, P]
+    sims = (1 + sims) / 2  # normalize [0, 1]
 
-class TAEModel(nn.Module):
-    def __init__(self, encoder, hidden_dim, num_classes, num_prototypes_per_class,
-                 margin=-0.1, disp_weight=0.1, align_weight=0.1, num_heads=3,
-                 prune_threshold=3, prune_ratio=5.0, taxonomy_distance_matrix=None):
-        super().__init__()
-        self.encoder = encoder
-        self.hidden_dim = hidden_dim
-        self.num_classes = num_classes
-        self.num_prototypes_per_class = num_prototypes_per_class
-        self.total_prototypes = num_classes * num_prototypes_per_class
+    # 3. mask 적용
+    sims[:, :, ~self.prototype_mask] = -1e9
 
-        self.prototype_embeddings = nn.Parameter(torch.randn(self.total_prototypes, hidden_dim) * 0.02)
-        self.pooler = MultiHeadPooling(hidden_dim, num_heads)
+    # 4. 카테고리별 최상 유사도 추출
+    sims = sims.view(B, K, C, -1)
+    max_sims, _ = sims.max(dim=3)  # [B, K, C]
+    final_sims, _ = max_sims.max(dim=1)  # [B, C]
 
-        self.margin = margin
-        self.disp_weight = disp_weight
-        self.align_weight = align_weight
-        self.num_heads = num_heads
-        self.prune_threshold = prune_threshold
-        self.prune_ratio = prune_ratio
+    if labels is None:
+        return final_sims  # inference mode
 
-        self.register_buffer('positive_usage', torch.zeros(self.total_prototypes))
-        self.register_buffer('negative_usage', torch.zeros(self.total_prototypes))
-        self.register_buffer('prototype_mask', torch.ones(self.total_prototypes).bool())
+    # 5. margin filtering
+    correct_scores = final_sims[torch.arange(B), labels]
+    pred_labels = final_sims.argmax(dim=1)
+    pred_scores = final_sims[torch.arange(B), pred_labels]
+    margin_mask = (correct_scores - pred_scores) > self.margin
 
-        if taxonomy_distance_matrix is None:
-            self.register_buffer('taxonomy_dist', torch.ones(self.total_prototypes, self.total_prototypes))
-        else:
-            self.register_buffer('taxonomy_dist', taxonomy_distance_matrix)
+    if margin_mask.sum() == 0:
+        return final_sims, torch.tensor(0.0, requires_grad=True, device=final_sims.device)
+
+    # 6. Cross-Entropy
+    filtered_output = final_sims[margin_mask]
+    filtered_labels = labels[margin_mask]
+    ce_loss = F.cross_entropy(filtered_output, filtered_labels)
+
+    # 7. Dispersion Loss (taxonomy-weighted)
+    cosine_sim = torch.matmul(proto_norm, proto_norm.T)  # [P, P]
+    disp_loss = -(self.taxonomy_dist * cosine_sim).mean()
+
+    # 8. Taxonomy Alignment (프로토타입 평균 기반)
+    aligned_vecs = semantic_vecs.mean(dim=1)  # [B, H]
+    aligned_vecs = F.normalize(aligned_vecs, dim=1)
+
+    target_protos = []
+    for c in labels:
+        start = c * self.num_prototypes_per_class
+        end = start + self.num_prototypes_per_class
+        class_protos = proto_norm[start:end]
+        class_mean = class_protos.mean(dim=0)
+        target_protos.append(class_mean)
+    target_protos = torch.stack(target_protos, dim=0)  # [B, H]
+    target_protos = F.normalize(target_protos, dim=1)
+
+    align_loss = 1 - (aligned_vecs * target_protos).sum(dim=1).mean()
+
+    # 9. 총 Loss
+    total_loss = ce_loss + self.disp_weight * disp_loss + self.align_weight * align_loss
+
+    # 10. 사용 통계 업데이트
+    with torch.no_grad():
+        sims_reshaped = sims.view(B, K, C, -1)
+        best_proto_ids = sims_reshaped.argmax(dim=3)  # [B, K, C]
+        for i in range(B):
+            for c in range(C):
+                for k in range(K):
+                    proto_idx = c * self.num_prototypes_per_class + best_proto_ids[i, k, c].item()
+                    if c == labels[i].item():
+                        self.positive_usage[proto_idx] += 1
+                    elif c == pred_labels[i].item() and pred_labels[i] != labels[i]:
+                        self.negative_usage[proto_idx] += 1
+
+    return final_sims, total_loss
