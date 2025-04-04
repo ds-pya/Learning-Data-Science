@@ -1,53 +1,20 @@
-fun calculateBucketedScores(
-    scores: List<MusicScore>,
-    startTime: Long,
-    endTime: Long
-): Map<Pair<Genre, Platform>, List<Pair<TimeBucket, Double>>> {
-
-    val lambda = ln(2.0) / (336.0)  // 2주 후 절반 감쇠 -> 시간 단위: 시간 기준
-    val bucketSizeMillis = 3600_000L
-    val timeBuckets = generateTimeBuckets(startTime, endTime)
-    val totalBuckets = timeBuckets.size
-
-    // 초기화: (genre, platform) → 버킷별 점수 리스트
-    val genrePlatformToBucketScores = mutableMapOf<Pair<Genre, Platform>, MutableList<Pair<TimeBucket, Double>>>()
-
-    for (bucket in timeBuckets) {
-        val bucketCenter = (bucket.start + bucket.end) / 2
-        val hoursFromEnd = (endTime - bucketCenter).toDouble() / bucketSizeMillis // decay를 위해 거리 계산
-        val decay = exp(-lambda * hoursFromEnd)
-
-        // 이 버킷과 겹치는 score들을 모음
-        val overlappingScores = scores.mapNotNull { score ->
-            val overlapStart = maxOf(score.startTime, bucket.start)
-            val overlapEnd = minOf(score.endTime, bucket.end)
-            val overlapDuration = overlapEnd - overlapStart
-
-            if (overlapDuration > 0) {
-                val overlapSeconds = overlapDuration / 1000.0
-                Triple(score.genre, score.platform, score.score * score.weight * overlapSeconds)
-            } else null
-        }
-
-        // 장르-플랫폼 단위로 평균 점수 계산
-        val grouped = overlappingScores
-            .groupBy { it.first to it.second }
-            .mapValues { (_, entries) ->
-                val totalWeight = entries.size.toDouble()
-                val avgScore = entries.sumOf { it.third } / totalWeight
-                avgScore * decay
-            }
-
-        // 결과에 누적
-        for ((key, decayedScore) in grouped) {
-            genrePlatformToBucketScores
-                .getOrPut(key) { MutableList(totalBuckets) { TimeBucket(0, 0) to 0.0 } }
-                .let { list ->
-                    val idx = timeBuckets.indexOf(bucket)
-                    list[idx] = bucket to decayedScore
-                }
-        }
-    }
-
-    return genrePlatformToBucketScores
-}
+/**
+ * Computes genre-wise scores based on music listening behavior over a specified time range.
+ *
+ * The function filters the input data based on the optional target platforms, genres, and actions,
+ * and computes per-genre scores by:
+ * 1. Splitting the target time range into 1-hour buckets.
+ * 2. Calculating per-bucket scores using time decay (exponential), overlap duration, and weight.
+ * 3. Aggregating platform-level scores for each genre using softmax-scaled platform weights.
+ *
+ * If `endTime` is null, the current system time is used.
+ * If a filter list (e.g., `targetPlatforms`) is null, no filtering is applied for that field.
+ *
+ * @param data The list of music listening records.
+ * @param startTime The start of the time range in epoch milliseconds.
+ * @param endTime The (optional) end of the time range in epoch milliseconds.
+ * @param targetPlatforms Optional list of platforms to include.
+ * @param targetGenres Optional list of genres to include.
+ * @param targetActions Optional list of actions to include.
+ * @return A map of genre to its final computed score (normalized across platforms).
+ */
