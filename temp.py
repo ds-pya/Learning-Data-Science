@@ -1,47 +1,99 @@
-def train(model, dataloader, optimizer, device, num_epochs=10, prune_every=3):
-    model.to(device)
-    for epoch in range(1, num_epochs + 1):
-        model.train()
-        total_loss = 0.0
-        total_correct = 0
-        total_count = 0
+package com.yourpkg.settings
 
-        for batch in dataloader:
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            labels = batch['labels'].to(device)
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.LinearLayout
+import androidx.fragment.app.Fragment
+import androidx.preference.PreferenceFragmentCompat
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.yourpkg.log.CustomLogAdapter
+import com.yourpkg.log.LogLine
 
-            optimizer.zero_grad()
-            scores, loss = model(input_ids, attention_mask, labels)
-            loss.backward()
-            optimizer.step()
+class CustomFragment : PreferenceFragmentCompat() {
 
-            total_loss += loss.item() * input_ids.size(0)
-            preds = scores.argmax(dim=1)
-            total_correct += (preds == labels).sum().item()
-            total_count += input_ids.size(0)
+    private var logThread: Thread? = null
+    private val tagFilter = "MyAppTag" // logcat 필터링용 태그
 
-        avg_loss = total_loss / total_count
-        acc = total_correct / total_count
+    override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
+        setPreferencesFromResource(R.xml.main)
+    }
 
-        print(f"[Epoch {epoch}] Loss: {avg_loss:.4f}, Acc: {acc:.4f}")
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
+    ): View? {
+        val prefView = super.onCreateView(inflater, container, savedInstanceState)
 
-        # pruning 주기마다 실행
-        if epoch % prune_every == 0:
-            prune_prototypes(model)
-            reset_prototype_usage(model)
+        val rootLayout = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
 
-# 예: BERT tokenizer와 함께 사용할 수 있는 dataloader
-# dataloader는 {'input_ids', 'attention_mask', 'labels'} 포함된 batch 반환 가정
+        prefView?.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        )
 
-from transformers import AdamW
+        val logAdapter = CustomLogAdapter { logLine ->
+            logLine.destination?.let {
+                navigateToFragment(it)
+            }
+        }
 
-model = TAEModel(encoder=your_bert_encoder,
-                 hidden_dim=384,
-                 num_classes=10,
-                 num_prototypes_per_class=5,
-                 taxonomy_distance_matrix=your_taxonomy_weight_matrix)
+        val recyclerView = RecyclerView(requireContext()).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+            )
+            layoutManager = LinearLayoutManager(requireContext())
+            adapter = logAdapter
+        }
 
-optimizer = AdamW(model.parameters(), lr=2e-5)
+        rootLayout.addView(prefView)
+        rootLayout.addView(recyclerView)
 
-train(model, dataloader=train_dataloader, optimizer=optimizer, device='cuda', num_epochs=10)
+        startLogcatReader(logAdapter, recyclerView)
+
+        return rootLayout
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        logThread?.interrupt()
+        logThread = null
+    }
+
+    private fun startLogcatReader(adapter: CustomLogAdapter, recyclerView: RecyclerView) {
+        logThread = Thread {
+            try {
+                val process = ProcessBuilder("logcat", "-s", tagFilter).start()
+                val reader = process.inputStream.bufferedReader()
+
+                while (!Thread.currentThread().isInterrupted) {
+                    val line = reader.readLine() ?: break
+                    val logLine = LogLine(message = line)  // destination은 나중에 분석해서 지정해도 됨
+
+                    activity?.runOnUiThread {
+                        adapter.addLog(logLine)
+                        recyclerView.scrollToPosition(adapter.itemCount - 1)
+                    }
+                }
+
+                reader.close()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        logThread?.start()
+    }
+
+    private fun navigateToFragment(fragmentClass: Class<out Fragment>) {
+        parentFragmentManager.beginTransaction()
+            .replace(requireParentFragment().id, fragmentClass.newInstance())
+            .addToBackStack(null)
+            .commit()
+    }
+}
