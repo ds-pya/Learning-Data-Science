@@ -1,20 +1,50 @@
-/**
- * Computes genre-wise scores based on music listening behavior over a specified time range.
- *
- * The function filters the input data based on the optional target platforms, genres, and actions,
- * and computes per-genre scores by:
- * 1. Splitting the target time range into 1-hour buckets.
- * 2. Calculating per-bucket scores using time decay (exponential), overlap duration, and weight.
- * 3. Aggregating platform-level scores for each genre using softmax-scaled platform weights.
- *
- * If `endTime` is null, the current system time is used.
- * If a filter list (e.g., `targetPlatforms`) is null, no filtering is applied for that field.
- *
- * @param data The list of music listening records.
- * @param startTime The start of the time range in epoch milliseconds.
- * @param endTime The (optional) end of the time range in epoch milliseconds.
- * @param targetPlatforms Optional list of platforms to include.
- * @param targetGenres Optional list of genres to include.
- * @param targetActions Optional list of actions to include.
- * @return A map of genre to its final computed score (normalized across platforms).
- */
+class CustomFragment : PreferenceFragmentCompat() {
+
+    override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
+        setPreferencesFromResource(R.xml.main)  // 기존 preference 정의 유지
+    }
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
+    ): View? {
+        // PreferenceFragmentCompat가 기본적으로 만드는 뷰
+        val prefView = super.onCreateView(inflater, container, savedInstanceState)
+
+        // 전체 화면을 위한 LinearLayout 만들기
+        val rootLayout = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+
+        // Preference 화면이 화면 절반 차지
+        prefView?.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        )
+
+        // 로그 뷰 추가 (ScrollView 안에 TextView)
+        val logView = TextView(requireContext()).apply {
+            text = "Log viewer area"
+            setBackgroundColor(Color.BLACK)
+            setTextColor(Color.WHITE)
+            setPadding(16, 16, 16, 16)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+            )
+        }
+
+        val scroll = ScrollView(requireContext()).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+            )
+            addView(logView)
+        }
+
+        // 합치기
+        rootLayout.addView(prefView)
+        rootLayout.addView(scroll)
+
+        return rootLayout
+    }
+}
