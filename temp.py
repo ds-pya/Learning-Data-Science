@@ -1,49 +1,40 @@
 import torch
+import torch.nn as nn
+import os
 
-# ONNX용 dummy input
-dummy_input_ids = torch.ones(1, 128, dtype=torch.long)
-dummy_attention_mask = torch.ones(1, 128, dtype=torch.long)
+class InferenceWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.encoder = model.encoder
+        self.dropout = model.dropout
+        self.classifier = model.mlp if hasattr(model, "mlp") else model.classifier
 
-# 모델 평가 모드
-model.eval()
+    def forward(self, input_ids, attention_mask):
+        x = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        x = self.dropout(x)
+        logits = self.classifier(x)
+        return logits
 
-# ONNX export
-torch.onnx.export(
-    model,
-    (dummy_input_ids, dummy_attention_mask),
-    "ner_model.onnx",
-    input_names=["input_ids", "attention_mask"],
-    output_names=["logits"],  # 또는 decoded result
-    dynamic_axes={
-        "input_ids": {0: "batch_size", 1: "seq_len"},
-        "attention_mask": {0: "batch_size", 1: "seq_len"},
-        "logits": {0: "batch_size", 1: "seq_len"},
-    },
-    opset_version=13
-)
+def export_ner_model_and_crf(model: nn.Module, export_dir: str, seq_len: int = 128):
+    os.makedirs(export_dir, exist_ok=True)
 
-import onnxruntime
-from transformers import AutoTokenizer
+    wrapper = InferenceWrapper(model).cpu().eval()
 
-# 로드
-session = onnxruntime.InferenceSession("ner_model.onnx")
+    dummy_input_ids = torch.ones(1, seq_len, dtype=torch.long)
+    dummy_attention_mask = torch.ones(1, seq_len, dtype=torch.long)
 
-# 예시 문장
-text = "홍길동은 서울에 살고 있습니다."
-tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-inputs = tokenizer(text, return_tensors="np", padding="max_length", max_length=128, truncation=True)
+    torch.onnx.export(
+        wrapper,
+        (dummy_input_ids, dummy_attention_mask),
+        os.path.join(export_dir, "ner_model.onnx"),
+        input_names=["input_ids", "attention_mask"],
+        output_names=["logits"],
+        dynamic_axes={
+            "input_ids": {0: "batch_size", 1: "seq_len"},
+            "attention_mask": {0: "batch_size", 1: "seq_len"},
+            "logits": {0: "batch_size", 1: "seq_len"}
+        },
+        opset_version=13
+    )
 
-# ONNX 추론
-ort_inputs = {
-    "input_ids": inputs["input_ids"],
-    "attention_mask": inputs["attention_mask"]
-}
-logits = session.run(["logits"], ort_inputs)[0]  # shape: (1, 128, num_labels)
-
-# 가장 높은 값 → 예측 라벨
-predicted_ids = logits.argmax(-1)[0]  # shape: (128,)
-
-# 정리해서 토큰과 같이 출력
-tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
-for token, pred_id in zip(tokens, predicted_ids):
-    print(f"{token}\t→\t{our_labels[pred_id]}")
+    torch.save(model.crf.transitions.detach().cpu(), os.path.join(export_dir, "crf_transition_matrix.pt"))
