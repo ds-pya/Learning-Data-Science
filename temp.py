@@ -1,26 +1,30 @@
-def relabel_with_offset_matching_batch(examples):
-    sentences = examples["sentence"]
-    tokens_list = examples["tokens"]
-    tags_list = examples["ner_tags"]
+def tokenize_and_align_labels_conll_char_based(examples):
+    all_tokens = examples["tokens"]       # 단어 단위 토큰 리스트
+    all_tags = examples["ner_tags"]       # 단어 단위 라벨 인덱스
 
     batch_input_ids = []
     batch_attention_mask = []
     batch_labels = []
 
-    for tokens, tags, sentence in zip(tokens_list, tags_list, sentences):
-        # 1. char-level BIO 라벨 시퀀스 구성
-        tag_names = [klue_idx_to_our_tag[t] for t in tags]
-        tag_ids = [our_tag_to_id[t] for t in tag_names]
+    for tokens, tags in zip(all_tokens, all_tags):
+        sentence = " ".join(tokens)
         char_labels = [0] * len(sentence)
 
+        # 각 토큰을 문자 단위로 라벨 확장
         pos = 0
-        for token, tag in zip(tokens, tag_ids):
-            for _ in token:
-                if pos < len(char_labels):
-                    char_labels[pos] = tag
-                pos += 1
+        for token, tag_idx in zip(tokens, tags):
+            tag = conll_idx_to_our_tag[tag_idx]     # 예: B-LOC
+            label_id = our_tag_to_id[tag]           # 예: 3
 
-        # 2. 토크나이징 + offset
+            for i, ch in enumerate(token):
+                if pos + i < len(char_labels):
+                    if i == 0 and tag.startswith("B-"):
+                        char_labels[pos + i] = label_id
+                    elif tag.startswith("I-") or (tag.startswith("B-") and i > 0):
+                        char_labels[pos + i] = label_id + 1  # I-tag = B+1
+            pos += len(token) + 1  # 단어 사이의 공백 포함
+
+        # 모델 tokenizer 적용
         tokenized = tokenizer(
             sentence,
             return_offsets_mapping=True,
@@ -29,29 +33,29 @@ def relabel_with_offset_matching_batch(examples):
         )
         offsets = tokenized["offset_mapping"]
 
-        # 3. offset -> sub-token 단위 라벨 재정렬
-        aligned = []
+        # offset 기반 라벨 재정렬
+        aligned_labels = []
         for start, end in offsets:
             if end == 0:
-                aligned.append(-100)
+                aligned_labels.append(-100)
                 continue
 
             window = char_labels[start:end]
             unique = list(set(window))
 
             if all(v == 0 for v in unique):
-                aligned.append(0)
+                aligned_labels.append(0)
             elif len(set([v // 2 for v in unique if v != 0])) == 1:
-                aligned.append(min(unique))
+                aligned_labels.append(min(unique))  # B 우선
             else:
-                aligned.append(0)  # 애매하면 O
+                aligned_labels.append(0)  # 불일치는 O로 처리
 
         batch_input_ids.append(tokenized["input_ids"])
         batch_attention_mask.append(tokenized["attention_mask"])
-        batch_labels.append(aligned)
+        batch_labels.append(aligned_labels)
 
     return {
         "input_ids": batch_input_ids,
         "attention_mask": batch_attention_mask,
-        "labels": batch_labels,
+        "labels": batch_labels
     }
