@@ -1,39 +1,15 @@
-def run_inference_onnx_with_crf(
-    text: str,
-    onnx_path: str,
-    crf_path: str,
-    model_name: str,
-    label_list: list,
-    max_length: int = 128
-):
-    import torch
-    import onnxruntime
-    import numpy as np
-    from transformers import AutoTokenizer
+def viterbi_decode_np(emissions, transition_matrix, mask=None):
+    # emissions: (seq_len, num_labels)
+    # transition_matrix: (num_labels, num_labels)
+    # mask: (seq_len,), optional
 
-    # Load tokenizer and CRF matrix
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    transitions = torch.load(crf_path).numpy()
+    dp = np.full((seq_len, num_labels), -inf)
+    backpointer = np.zeros((seq_len, num_labels), dtype=int)
 
-    # Tokenize input
-    enc = tokenizer(text, return_tensors="np", padding="max_length", truncation=True, max_length=max_length)
-    input_ids = enc["input_ids"]
-    attention_mask = enc["attention_mask"]
+    for t in 1..T:
+        for curr_label in 0..C:
+            dp[t][curr_label] = max over all prev_label (
+                dp[t-1][prev] + transition[prev][curr] + emission[t][curr]
+            )
 
-    # Run ONNX
-    ort_session = onnxruntime.InferenceSession(onnx_path)
-    ort_inputs = {
-        "input_ids": input_ids,
-        "attention_mask": attention_mask
-    }
-    emissions = ort_session.run(None, ort_inputs)[0]  # shape: (1, L, C)
-    emissions = emissions[0]  # (L, C)
-    mask = attention_mask[0]
-
-    # Decode using Viterbi
-    decoded = viterbi_decode_np(emissions, transitions, mask)
-
-    # Get tokens and predicted labels
-    tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
-    results = [(tok, label_list[tag]) for tok, tag, m in zip(tokens, decoded, mask) if m == 1]
-    return results
+    backtrack from best at dp[-1] → recover best_path
