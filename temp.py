@@ -1,46 +1,56 @@
-import torch
-import torch.nn as nn
-from transformers import AutoModel
-from peft import get_peft_model, LoraConfig, TaskType
-from torchcrf import CRF
+def tokenize_and_align_labels_from_sentence(examples):
+    sentences = examples["sentence"]
+    all_tokens = examples["tokens"]
+    all_tags = examples["ner_tags"]
 
-class NERModelWithCRF(nn.Module):
-    def __init__(self, model_name: str, num_labels: int):
-        super().__init__()
+    batch_input_ids, batch_attention_mask, batch_labels = [], [], []
 
-        self.num_labels = num_labels
+    for tokens, tags, sent in zip(all_tokens, all_tags, sentences):
+        # 1. BIO span 복원 (char-level)
+        spans = []
+        offset = 0
+        current_tag, start_idx = None, None
+        for i, (char, tag_idx) in enumerate(zip(tokens, tags)):
+            tag = klue_idx_to_our_tag[tag_idx]
+            if tag == "O":
+                if current_tag:
+                    spans.append((start_idx, offset, current_tag))
+                    current_tag, start_idx = None, None
+            elif tag.startswith("B-"):
+                if current_tag:
+                    spans.append((start_idx, offset, current_tag))
+                current_tag = tag[2:]
+                start_idx = offset
+            elif tag.startswith("I-") and current_tag:
+                pass  # continue span
+            offset += len(char)
+        if current_tag:
+            spans.append((start_idx, offset, current_tag))
 
-        # Base encoder (no labels passed!)
-        base_model = AutoModel.from_pretrained(model_name)
+        # 2. 모델 기준 토크나이징 + offset 추출
+        tokenized = tokenizer(sent, return_offsets_mapping=True, truncation=True)
+        offsets = tokenized.pop("offset_mapping")
 
-        # LoRA config (safe defaults, and no init args passed)
-        lora_config = LoraConfig(
-            task_type=TaskType.FEATURE_EXTRACTION,  # NOT TOKEN_CLS!
-            inference_mode=False,
-            r=8,
-            lora_alpha=32,
-            lora_dropout=0.1,
-        )
+        # 3. subword 단위로 BIO 라벨 재정렬
+        aligned = []
+        for start, end in offsets:
+            if end == 0:
+                aligned.append(-100)  # special token
+                continue
+            matched = None
+            for span_start, span_end, ent_type in spans:
+                if start >= span_start and end <= span_end:
+                    prefix = "B-" if start == span_start else "I-"
+                    matched = f"{prefix}{ent_type}"
+                    break
+            aligned.append(our_tag_to_id.get(matched, 0))  # default to "O"
 
-        self.encoder = get_peft_model(base_model, lora_config)
+        batch_input_ids.append(tokenized["input_ids"])
+        batch_attention_mask.append(tokenized["attention_mask"])
+        batch_labels.append(aligned)
 
-        # Token classification head
-        self.dropout = nn.Dropout(0.1)
-        self.classifier = nn.Linear(self.encoder.config.hidden_size, num_labels)
-
-        # CRF Layer
-        self.crf = CRF(num_labels, batch_first=True)
-
-    def forward(self, input_ids, attention_mask, labels=None):
-        # No labels passed to encoder!
-        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
-        sequence_output = self.dropout(outputs.last_hidden_state)
-        emissions = self.classifier(sequence_output)
-
-        if labels is not None:
-            labels = labels.clone()
-            labels[labels == -100] = 0  # mask용 dummy "O" 라벨
-            loss = -self.crf(emissions, labels, mask=attention_mask.bool(), reduction="mean")
-            return loss
-        else:
-            return self.crf.decode(emissions, mask=attention_mask.bool())
+    return {
+        "input_ids": batch_input_ids,
+        "attention_mask": batch_attention_mask,
+        "labels": batch_labels,
+    }
