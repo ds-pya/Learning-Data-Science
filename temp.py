@@ -1,40 +1,39 @@
-import torch
-import torch.nn as nn
-import os
+def run_inference_onnx_with_crf(
+    text: str,
+    onnx_path: str,
+    crf_path: str,
+    model_name: str,
+    label_list: list,
+    max_length: int = 128
+):
+    import torch
+    import onnxruntime
+    import numpy as np
+    from transformers import AutoTokenizer
 
-class InferenceWrapper(nn.Module):
-    def __init__(self, model):
-        super().__init__()
-        self.encoder = model.encoder
-        self.dropout = model.dropout
-        self.classifier = model.mlp if hasattr(model, "mlp") else model.classifier
+    # Load tokenizer and CRF matrix
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    transitions = torch.load(crf_path).numpy()
 
-    def forward(self, input_ids, attention_mask):
-        x = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
-        x = self.dropout(x)
-        logits = self.classifier(x)
-        return logits
+    # Tokenize input
+    enc = tokenizer(text, return_tensors="np", padding="max_length", truncation=True, max_length=max_length)
+    input_ids = enc["input_ids"]
+    attention_mask = enc["attention_mask"]
 
-def export_ner_model_and_crf(model: nn.Module, export_dir: str, seq_len: int = 128):
-    os.makedirs(export_dir, exist_ok=True)
+    # Run ONNX
+    ort_session = onnxruntime.InferenceSession(onnx_path)
+    ort_inputs = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask
+    }
+    emissions = ort_session.run(None, ort_inputs)[0]  # shape: (1, L, C)
+    emissions = emissions[0]  # (L, C)
+    mask = attention_mask[0]
 
-    wrapper = InferenceWrapper(model).cpu().eval()
+    # Decode using Viterbi
+    decoded = viterbi_decode_np(emissions, transitions, mask)
 
-    dummy_input_ids = torch.ones(1, seq_len, dtype=torch.long)
-    dummy_attention_mask = torch.ones(1, seq_len, dtype=torch.long)
-
-    torch.onnx.export(
-        wrapper,
-        (dummy_input_ids, dummy_attention_mask),
-        os.path.join(export_dir, "ner_model.onnx"),
-        input_names=["input_ids", "attention_mask"],
-        output_names=["logits"],
-        dynamic_axes={
-            "input_ids": {0: "batch_size", 1: "seq_len"},
-            "attention_mask": {0: "batch_size", 1: "seq_len"},
-            "logits": {0: "batch_size", 1: "seq_len"}
-        },
-        opset_version=13
-    )
-
-    torch.save(model.crf.transitions.detach().cpu(), os.path.join(export_dir, "crf_transition_matrix.pt"))
+    # Get tokens and predicted labels
+    tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
+    results = [(tok, label_list[tag]) for tok, tag, m in zip(tokens, decoded, mask) if m == 1]
+    return results
