@@ -1,56 +1,42 @@
-def tokenize_and_align_labels_from_sentence(examples):
-    sentences = examples["sentence"]
-    all_tokens = examples["tokens"]
-    all_tags = examples["ner_tags"]
+def relabel_with_offset_matching(tokens, ner_tags, sentence, tokenizer, label_map):
+    # 1. 문장 단위 BIO 라벨 시퀀스 만들기
+    tag_seq = [label_map(tag) for tag in ner_tags]
+    char_labels = [0] * len(sentence)
+    pos = 0
+    for token, tag in zip(tokens, tag_seq):
+        for _ in token:
+            if pos < len(char_labels):
+                char_labels[pos] = tag
+            pos += 1
 
-    batch_input_ids, batch_attention_mask, batch_labels = [], [], []
+    # 2. 모델 토크나이저로 문장 토크나이징 + offset mapping
+    tokenized = tokenizer(
+        sentence,
+        return_offsets_mapping=True,
+        return_special_tokens_mask=True,
+        truncation=True
+    )
+    offsets = tokenized["offset_mapping"]
 
-    for tokens, tags, sent in zip(all_tokens, all_tags, sentences):
-        # 1. BIO span 복원 (char-level)
-        spans = []
-        offset = 0
-        current_tag, start_idx = None, None
-        for i, (char, tag_idx) in enumerate(zip(tokens, tags)):
-            tag = klue_idx_to_our_tag[tag_idx]
-            if tag == "O":
-                if current_tag:
-                    spans.append((start_idx, offset, current_tag))
-                    current_tag, start_idx = None, None
-            elif tag.startswith("B-"):
-                if current_tag:
-                    spans.append((start_idx, offset, current_tag))
-                current_tag = tag[2:]
-                start_idx = offset
-            elif tag.startswith("I-") and current_tag:
-                pass  # continue span
-            offset += len(char)
-        if current_tag:
-            spans.append((start_idx, offset, current_tag))
+    # 3. offset 기준으로 서브토큰 단위 라벨 정렬
+    aligned_labels = []
+    for (start, end) in offsets:
+        if end == 0:
+            aligned_labels.append(-100)
+            continue
 
-        # 2. 모델 기준 토크나이징 + offset 추출
-        tokenized = tokenizer(sent, return_offsets_mapping=True, truncation=True)
-        offsets = tokenized.pop("offset_mapping")
+        window = char_labels[start:end]
+        unique = list(set(window))
 
-        # 3. subword 단위로 BIO 라벨 재정렬
-        aligned = []
-        for start, end in offsets:
-            if end == 0:
-                aligned.append(-100)  # special token
-                continue
-            matched = None
-            for span_start, span_end, ent_type in spans:
-                if start >= span_start and end <= span_end:
-                    prefix = "B-" if start == span_start else "I-"
-                    matched = f"{prefix}{ent_type}"
-                    break
-            aligned.append(our_tag_to_id.get(matched, 0))  # default to "O"
-
-        batch_input_ids.append(tokenized["input_ids"])
-        batch_attention_mask.append(tokenized["attention_mask"])
-        batch_labels.append(aligned)
+        if all(v == 0 for v in unique):
+            aligned_labels.append(0)  # 전부 O
+        elif len(set([v // 2 for v in unique if v != 0])) == 1:  # 동일 entity
+            aligned_labels.append(min(unique))  # B 우선
+        else:
+            aligned_labels.append(0)  # 애매한 경우 O
 
     return {
-        "input_ids": batch_input_ids,
-        "attention_mask": batch_attention_mask,
-        "labels": batch_labels,
+        "input_ids": tokenized["input_ids"],
+        "attention_mask": tokenized["attention_mask"],
+        "labels": aligned_labels
     }
