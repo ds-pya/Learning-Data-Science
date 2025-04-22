@@ -1,50 +1,42 @@
-class CustomFragment : PreferenceFragmentCompat() {
+fun viterbiDecode(
+    emissions: Array<FloatArray>,        // [L][C]
+    transitions: Array<FloatArray>,      // [C][C]
+    mask: BooleanArray                   // [L]
+): IntArray {
+    val L = emissions.size
+    val C = emissions[0].size
+    val score = emissions[0].copyOf()
+    val backpointers = mutableListOf<IntArray>()
 
-    override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
-        setPreferencesFromResource(R.xml.main)  // 기존 preference 정의 유지
+    for (t in 1 until L) {
+        val prevScore = FloatArray(C) { Float.NEGATIVE_INFINITY }
+        val bp = IntArray(C)
+        for (curr in 0 until C) {
+            var maxScore = Float.NEGATIVE_INFINITY
+            var argMax = 0
+            for (prev in 0 until C) {
+                val s = score[prev] + transitions[prev][curr]
+                if (s > maxScore) {
+                    maxScore = s
+                    argMax = prev
+                }
+            }
+            prevScore[curr] = maxScore + emissions[t][curr]
+            bp[curr] = argMax
+        }
+        backpointers.add(bp)
+        for (i in 0 until C) score[i] = prevScore[i]
     }
 
-    override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
-    ): View? {
-        // PreferenceFragmentCompat가 기본적으로 만드는 뷰
-        val prefView = super.onCreateView(inflater, container, savedInstanceState)
-
-        // 전체 화면을 위한 LinearLayout 만들기
-        val rootLayout = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-
-        // Preference 화면이 화면 절반 차지
-        prefView?.layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
-        )
-
-        // 로그 뷰 추가 (ScrollView 안에 TextView)
-        val logView = TextView(requireContext()).apply {
-            text = "Log viewer area"
-            setBackgroundColor(Color.BLACK)
-            setTextColor(Color.WHITE)
-            setPadding(16, 16, 16, 16)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
-            )
-        }
-
-        val scroll = ScrollView(requireContext()).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
-            )
-            addView(logView)
-        }
-
-        // 합치기
-        rootLayout.addView(prefView)
-        rootLayout.addView(scroll)
-
-        return rootLayout
+    // Backtrace
+    val bestLast = score.indices.maxByOrNull { score[it] } ?: 0
+    val path = mutableListOf(bestLast)
+    var current = bestLast
+    for (t in (L - 2) downTo 0) {
+        current = backpointers[t][current]
+        path.add(current)
     }
+
+    path.reverse()
+    return path.sliceArray(0 until mask.count { it })
 }
