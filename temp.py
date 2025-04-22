@@ -1,53 +1,38 @@
-import torch
-import torch.nn as nn
+def forward(self, emissions, tags, mask):
+    if not self.batch_first:
+        emissions = emissions.transpose(0, 1)
+        tags = tags.transpose(0, 1)
+        mask = mask.transpose(0, 1)
 
-class NeuralCRF(nn.Module):
-    def __init__(self, num_labels, batch_first=True):
-        super().__init__()
-        self.num_labels = num_labels
-        self.batch_first = batch_first
-        self.transitions = nn.Parameter(torch.randn(num_labels, num_labels))  # from_i → to_j
-        self.transition_mask = None  # optional: (C, C) mask
+    B, L, C = emissions.shape
+    transitions = self.transitions
+    if self.transition_mask is not None:
+        transitions = transitions + self.transition_mask
 
-    def set_transition_mask(self, mask: torch.Tensor):
-        """mask: (num_labels, num_labels) where invalid transitions are -inf"""
-        self.transition_mask = mask
+    # validate tags
+    if (tags >= C).any() or (tags < 0).any():
+        raise ValueError("Label index out of bounds in CRF.")
 
-    def forward(self, emissions, tags, mask):
-        if not self.batch_first:
-            emissions = emissions.transpose(0, 1)
-            tags = tags.transpose(0, 1)
-            mask = mask.transpose(0, 1)
+    score = torch.zeros(B, device=emissions.device)
 
-        B, L, C = emissions.shape
-        transitions = self.transitions
-        if self.transition_mask is not None:
-            transitions = transitions + self.transition_mask
+    for t in range(L - 1):
+        valid = mask[:, t] & mask[:, t + 1]
+        valid_idx = valid.nonzero(as_tuple=True)[0]
+        if len(valid_idx) == 0:
+            continue
 
-        # Score of the real path
-        score = torch.zeros(B, device=emissions.device)
-        for t in range(L - 1):
-            curr_tag = tags[:, t]
-            next_tag = tags[:, t + 1]
-            emit = emissions[:, t, :].gather(1, curr_tag.unsqueeze(1)).squeeze(1)
-            trans = transitions[curr_tag, next_tag]
-            score += emit * mask[:, t] + trans * mask[:, t + 1]
+        curr_tag = tags[valid_idx, t]
+        next_tag = tags[valid_idx, t + 1]
+        emit = emissions[valid_idx, t, :].gather(1, curr_tag.unsqueeze(1)).squeeze(1)
+        trans = transitions[curr_tag, next_tag]
+        score[valid_idx] += emit + trans
 
-        # Add final token's emission
-        last_tag = tags.gather(1, (mask.sum(1) - 1).clamp(min=0).unsqueeze(1)).squeeze(1)
-        last_emission = emissions[torch.arange(B), mask.sum(1).clamp(min=1) - 1, last_tag]
-        score += last_emission
+    # 마지막 토큰 emission 추가
+    last_tag_idx = (mask.sum(1) - 1).clamp(min=0)
+    batch_idx = torch.arange(B, device=emissions.device)
+    last_tag = tags[batch_idx, last_tag_idx]
+    last_emit = emissions[batch_idx, last_tag_idx, last_tag]
+    score += last_emit
 
-        log_Z = self._compute_log_partition(emissions, transitions, mask)
-        return (log_Z - score).mean()
-
-    def _compute_log_partition(self, emissions, transitions, mask):
-        B, L, C = emissions.shape
-        alpha = emissions[:, 0]  # (B, C)
-        for t in range(1, L):
-            emit = emissions[:, t].unsqueeze(2)        # (B, C, 1)
-            trans = transitions.unsqueeze(0)           # (1, C, C)
-            alpha_t = alpha.unsqueeze(1) + trans + emit  # (B, C, C)
-            alpha = torch.logsumexp(alpha_t, dim=2)
-            alpha = alpha * mask[:, t].unsqueeze(1) + alpha * (1 - mask[:, t].unsqueeze(1))
-        return torch.logsumexp(alpha, dim=1)
+    log_Z = self._compute_log_partition(emissions, transitions, mask)
+    return (log_Z - score).mean()
