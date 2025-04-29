@@ -1,1 +1,29 @@
-123
+jacoco {
+    toolVersion = "0.8.10" // 사용 중인 버전에 맞게 설정
+}
+
+jacocoTestReport {
+    dependsOn testDebugUnitTest
+
+    reports {
+        xml.required = true
+        html.required = true
+    }
+
+    afterEvaluate {
+        classDirectories.setFrom(files([
+            fileTree(
+                dir: "$buildDir/tmp/kotlin-classes/debug",
+                excludes: [
+                    '**/*_Impl.class',               // Room DAO
+                    '**/*_Factory.class',            // Dagger/Hilt
+                    '**/*_MembersInjector.class',    // Dagger
+                    '**/*_HiltModules.class',        // Hilt
+                    '**/*_Kt.class',                 // Kotlin helper
+                    '**/di/**',                      // 의존성 주입 패키지
+                    '**/generated/**'                // 자동 생성 전체
+                ]
+            )
+        ]))
+    }
+}
