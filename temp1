@@ -1,29 +1,47 @@
-jacoco {
-    toolVersion = "0.8.10" // 사용 중인 버전에 맞게 설정
+fun putAlphaScoreList(bundle: Bundle, key: String, scores: List<AlphaScore>) {
+    val scoreBundles = ArrayList<Bundle>()
+    for (score in scores) {
+        val tagBundles = ArrayList<Bundle>()
+        for (tag in score.tags) {
+            val tagBundle = Bundle().apply {
+                putString("keyword", tag.keyword)
+                putString("type", tag.type)
+                putString("value", tag.value)
+            }
+            tagBundles.add(tagBundle)
+        }
+
+        val scoreBundle = Bundle().apply {
+            putString("id", score.id)
+            putString("source", score.source)
+            putString("keyword", score.keyword)
+            putDouble("score", score.score)
+            putParcelableArrayList("tags", tagBundles)
+        }
+
+        scoreBundles.add(scoreBundle)
+    }
+    bundle.putParcelableArrayList(key, scoreBundles)
 }
 
-jacocoTestReport {
-    dependsOn testDebugUnitTest
-
-    reports {
-        xml.required = true
-        html.required = true
-    }
-
-    afterEvaluate {
-        classDirectories.setFrom(files([
-            fileTree(
-                dir: "$buildDir/tmp/kotlin-classes/debug",
-                excludes: [
-                    '**/*_Impl.class',               // Room DAO
-                    '**/*_Factory.class',            // Dagger/Hilt
-                    '**/*_MembersInjector.class',    // Dagger
-                    '**/*_HiltModules.class',        // Hilt
-                    '**/*_Kt.class',                 // Kotlin helper
-                    '**/di/**',                      // 의존성 주입 패키지
-                    '**/generated/**'                // 자동 생성 전체
-                ]
+fun getAlphaScoreList(bundle: Bundle, key: String): List<AlphaScore> {
+    val scoreBundles = bundle.getParcelableArrayList<Bundle>(key) ?: return emptyList()
+    return scoreBundles.map { scoreBundle ->
+        val tagBundles = scoreBundle.getParcelableArrayList<Bundle>("tags") ?: emptyList()
+        val tags = tagBundles.map { tagBundle ->
+            Tag(
+                keyword = tagBundle.getString("keyword").orEmpty(),
+                type = tagBundle.getString("type").orEmpty(),
+                value = tagBundle.getString("value").orEmpty()
             )
-        ]))
+        }
+
+        AlphaScore(
+            id = scoreBundle.getString("id").orEmpty(),
+            source = scoreBundle.getString("source").orEmpty(),
+            keyword = scoreBundle.getString("keyword").orEmpty(),
+            score = scoreBundle.getDouble("score"),
+            tags = tags
+        )
     }
 }
