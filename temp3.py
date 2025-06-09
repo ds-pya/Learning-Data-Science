@@ -1,31 +1,48 @@
-import numpy as np
+private fun showInputDialog() {
+    val context = requireContext()
+    binding = DialogInputBinding.inflate(layoutInflater)
 
-def viterbi_decode_np(emissions: np.ndarray, transitions: np.ndarray, mask: np.ndarray):
-    """
-    Args:
-        emissions: (L, C) np.ndarray - emission scores
-        transitions: (C, C) np.ndarray - transition scores (from_i → to_j)
-        mask: (L,) np.ndarray - 1 for valid token, 0 for padding
+    val sourceNames = listOf("Source A", "Source B", "Source C")
+    val checkBoxMap = mutableMapOf<String, CheckBox>()
 
-    Returns:
-        List[int] - predicted label indices
-    """
-    L, C = emissions.shape
-    score = emissions[0]  # (C,)
-    backpointers = []
+    // 동적으로 CheckBox 생성
+    sourceNames.forEach { name ->
+        val checkBox = CheckBox(context).apply { text = name }
+        binding.containerSources.addView(checkBox)
+        checkBoxMap[name] = checkBox
+    }
 
-    for t in range(1, L):
-        broadcast_score = score[:, np.newaxis] + transitions  # (C, C)
-        best_prev = np.argmax(broadcast_score, axis=0)        # (C,)
-        score = np.max(broadcast_score, axis=0) + emissions[t]
-        backpointers.append(best_prev)
+    // Spinner 설정
+    val sourceOptions = listOf("Option 1", "Option 2", "Option 3")
+    val spinnerAdapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, sourceOptions)
+    binding.spinnerSource.adapter = spinnerAdapter
 
-    best_last = np.argmax(score)
-    best_path = [best_last]
+    // Timestamp 클릭 시 Date + Time Picker
+    var selectedTimestamp: Long? = null
+    binding.editTimestamp.setOnClickListener {
+        val calendar = Calendar.getInstance()
+        DatePickerDialog(context, { _, year, month, day ->
+            TimePickerDialog(context, { _, hour, minute ->
+                calendar.set(year, month, day, hour, minute)
+                selectedTimestamp = calendar.timeInMillis
+                val formatted = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(selectedTimestamp!!))
+                binding.editTimestamp.setText(formatted)
+            }, calendar.get(Calendar.HOUR_OF_DAY), calendar.get(Calendar.MINUTE), true).show()
+        }, calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH), calendar.get(Calendar.DAY_OF_MONTH)).show()
+    }
 
-    for t in reversed(range(L - 1)):
-        best_last = backpointers[t][best_last]
-        best_path.append(best_last)
+    // AlertDialog 빌드
+    AlertDialog.Builder(context)
+        .setTitle("Input")
+        .setView(binding.root)
+        .setPositiveButton("확인") { _, _ ->
+            val selectedSources = checkBoxMap.filter { it.value.isChecked }.keys.toList()
+            val selectedSource = binding.spinnerSource.selectedItem.toString()
+            val title = binding.editTitle.text.toString()
+            val timestamp = selectedTimestamp
 
-    best_path.reverse()
-    return best_path[:int(mask.sum())]
+            processInput(selectedSources, selectedSource, title, timestamp)
+        }
+        .setNegativeButton("취소", null)
+        .show()
+}
