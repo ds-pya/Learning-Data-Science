@@ -1,4 +1,41 @@
-deb http://archive.ubuntu.com/ubuntu focal main restricted universe multiverse
-deb http://archive.ubuntu.com/ubuntu focal-updates main restricted universe multiverse
-deb http://archive.ubuntu.com/ubuntu focal-backports main restricted universe multiverse
-deb http://security.ubuntu.com/ubuntu focal-security main restricted universe multiverse
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:padding="24dp"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+    <LinearLayout
+        android:id="@+id/dialog_container"
+        android:orientation="vertical"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <!-- Sources (multi-checkbox) -->
+        <TextView android:text="Select Sources" android:textStyle="bold" />
+        <CheckBox android:id="@+id/check_source_a" android:text="Source A" />
+        <CheckBox android:id="@+id/check_source_b" android:text="Source B" />
+        <CheckBox android:id="@+id/check_source_c" android:text="Source C" />
+
+        <!-- Source (dropdown) -->
+        <TextView android:text="Choose Source" android:textStyle="bold" android:layout_marginTop="16dp"/>
+        <Spinner android:id="@+id/spinner_source"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <!-- Title (edit text) -->
+        <TextView android:text="Title" android:textStyle="bold" android:layout_marginTop="16dp"/>
+        <EditText android:id="@+id/edit_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Enter title" />
+
+        <!-- Timestamp (clickable text field) -->
+        <TextView android:text="Timestamp" android:textStyle="bold" android:layout_marginTop="16dp"/>
+        <EditText android:id="@+id/edit_timestamp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:focusable="false"
+            android:clickable="true"
+            android:hint="Select date and time" />
+    </LinearLayout>
+</ScrollView>
