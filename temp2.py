@@ -1,41 +1,48 @@
-from transformers import AutoModel
-from peft import get_peft_model, LoraConfig, TaskType
+<LinearLayout
+    android:id="@+id/container_sources"
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="16dp"/>
 
-class NERModelWithCustomCRF(nn.Module):
-    def __init__(self, model_name: str, num_labels: int, transition_mask: torch.Tensor = None):
-        super().__init__()
-        self.num_labels = num_labels
+private fun showInputDialog() {
+    val context = requireContext()
+    val dialogView = LayoutInflater.from(context).inflate(R.layout.dialog_input, null)
 
-        # Load encoder with LoRA
-        base_model = AutoModel.from_pretrained(model_name)
-        lora_config = LoraConfig(
-            task_type=TaskType.FEATURE_EXTRACTION,
-            inference_mode=False,
-            r=8,
-            lora_alpha=32,
-            lora_dropout=0.1
-        )
-        self.encoder = get_peft_model(base_model, lora_config)
-        hidden_size = self.encoder.config.hidden_size
+    val container = dialogView.findViewById<LinearLayout>(R.id.container_sources)
+    val sourceNames = listOf("Source A", "Source B", "Source C", "Source D")
 
-        # Classifier
-        self.dropout = nn.Dropout(0.1)
-        self.mlp = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_size, num_labels)
-        )
+    // 동적으로 체크박스 생성
+    val checkBoxMap = mutableMapOf<String, CheckBox>()
+    for (name in sourceNames) {
+        val checkBox = CheckBox(context).apply {
+            text = name
+        }
+        checkBoxMap[name] = checkBox
+        container.addView(checkBox)
+    }
 
-        # CRF
-        self.crf = NeuralCRF(num_labels, batch_first=True)
-        if transition_mask is not None:
-            self.crf.set_transition_mask(transition_mask)
+    val spinner = dialogView.findViewById<Spinner>(R.id.spinner_source)
+    val editTitle = dialogView.findViewById<EditText>(R.id.edit_title)
+    val editTimestamp = dialogView.findViewById<EditText>(R.id.edit_timestamp)
 
-    def forward(self, input_ids, attention_mask, labels=None):
-        x = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
-        x = self.dropout(x)
-        logits = self.mlp(x)
-        if labels is not None:
-            return self.crf(logits, labels, attention_mask.bool())
-        return logits  # for inference
+    // Spinner 설정
+    val options = listOf("Option 1", "Option 2", "Option 3")
+    spinner.adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, options)
+
+    // Timestamp 설정 생략 (이전 코드 참고)
+
+    AlertDialog.Builder(context)
+        .setTitle("Input")
+        .setView(dialogView)
+        .setPositiveButton("OK") { _, _ ->
+            val selectedSources = checkBoxMap.filter { it.value.isChecked }.keys.toList()
+            val selectedSource = spinner.selectedItem.toString()
+            val title = editTitle.text.toString()
+            val timestamp = editTimestamp.text.toString()
+
+            processInput(selectedSources, selectedSource, title, timestamp)
+        }
+        .setNegativeButton("Cancel", null)
+        .show()
+}
