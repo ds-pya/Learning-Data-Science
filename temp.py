@@ -1,38 +1,69 @@
-def forward(self, emissions, tags, mask):
-    if not self.batch_first:
-        emissions = emissions.transpose(0, 1)
-        tags = tags.transpose(0, 1)
-        mask = mask.transpose(0, 1)
+override fun onPreferenceTreeClick(preference: Preference): Boolean {
+    when (preference.key) {
+        "your_preference_key" -> {
+            showInputDialog()
+            return true
+        }
+    }
+    return super.onPreferenceTreeClick(preference)
+}
 
-    B, L, C = emissions.shape
-    transitions = self.transitions
-    if self.transition_mask is not None:
-        transitions = transitions + self.transition_mask
+private fun showInputDialog() {
+    val context = requireContext()
+    val dialogView = LayoutInflater.from(context).inflate(R.layout.dialog_input, null)
 
-    # validate tags
-    if (tags >= C).any() or (tags < 0).any():
-        raise ValueError("Label index out of bounds in CRF.")
+    val checkA = dialogView.findViewById<CheckBox>(R.id.check_source_a)
+    val checkB = dialogView.findViewById<CheckBox>(R.id.check_source_b)
+    val checkC = dialogView.findViewById<CheckBox>(R.id.check_source_c)
 
-    score = torch.zeros(B, device=emissions.device)
+    val spinner = dialogView.findViewById<Spinner>(R.id.spinner_source)
+    val editTitle = dialogView.findViewById<EditText>(R.id.edit_title)
+    val editTimestamp = dialogView.findViewById<EditText>(R.id.edit_timestamp)
 
-    for t in range(L - 1):
-        valid = mask[:, t] & mask[:, t + 1]
-        valid_idx = valid.nonzero(as_tuple=True)[0]
-        if len(valid_idx) == 0:
-            continue
+    // Spinner setup
+    val options = listOf("Option 1", "Option 2", "Option 3")
+    spinner.adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, options)
 
-        curr_tag = tags[valid_idx, t]
-        next_tag = tags[valid_idx, t + 1]
-        emit = emissions[valid_idx, t, :].gather(1, curr_tag.unsqueeze(1)).squeeze(1)
-        trans = transitions[curr_tag, next_tag]
-        score[valid_idx] += emit + trans
+    // Date & Time Picker on timestamp field
+    var selectedTimestamp: Long? = null
+    editTimestamp.setOnClickListener {
+        val calendar = Calendar.getInstance()
+        DatePickerDialog(context, { _, year, month, day ->
+            TimePickerDialog(context, { _, hour, minute ->
+                calendar.set(year, month, day, hour, minute)
+                selectedTimestamp = calendar.timeInMillis
+                val formatted = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(selectedTimestamp!!))
+                editTimestamp.setText(formatted)
+            }, calendar.get(Calendar.HOUR_OF_DAY), calendar.get(Calendar.MINUTE), true).show()
+        }, calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH), calendar.get(Calendar.DAY_OF_MONTH)).show()
+    }
 
-    # 마지막 토큰 emission 추가
-    last_tag_idx = (mask.sum(1) - 1).clamp(min=0)
-    batch_idx = torch.arange(B, device=emissions.device)
-    last_tag = tags[batch_idx, last_tag_idx]
-    last_emit = emissions[batch_idx, last_tag_idx, last_tag]
-    score += last_emit
+    AlertDialog.Builder(context)
+        .setTitle("Input")
+        .setView(dialogView)
+        .setPositiveButton("OK") { _, _ ->
+            val sources = mutableListOf<String>()
+            if (checkA.isChecked) sources.add("Source A")
+            if (checkB.isChecked) sources.add("Source B")
+            if (checkC.isChecked) sources.add("Source C")
 
-    log_Z = self._compute_log_partition(emissions, transitions, mask)
-    return (log_Z - score).mean()
+            val selectedSource = spinner.selectedItem.toString()
+            val title = editTitle.text.toString()
+            val timestamp = selectedTimestamp
+
+            // 처리
+            processInput(sources, selectedSource, title, timestamp)
+        }
+        .setNegativeButton("Cancel", null)
+        .show()
+}
+
+private fun processInput(
+    sources: List<String>,
+    source: String,
+    title: String,
+    timestamp: Long?
+) {
+    Log.d("Input", "Sources=$sources, Source=$source, Title=$title, Timestamp=$timestamp")
+    // 여기에 실제 처리 로직 작성
+}
