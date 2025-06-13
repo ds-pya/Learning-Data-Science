@@ -1,12 +1,12 @@
 fun extractNamedEntities(
-    decodedScore: IntArray, // 예: [0, 1, 2, 0, 3]
-    attentionMask: IntArray, // 128
-    specialTokensMask: IntArray, // 128
-    offsets: List<Pair<Int, Int>>, // 128
+    decodedScore: IntArray,                  // 길이: 실제 토큰 수 (ex. 512 중 active만)
+    attentionMask: LongArray,                // 길이 512
+    specialTokensMask: LongArray,            // 길이 512
+    offsets: List<Pair<Int, Int>>,           // 길이 512, 이미 byte → char 변환된 상태
     text: String
 ): List<Pair<String, String>> {
 
-    // 라벨 인덱스를 BIO 라벨로 변환하는 리스트 (0~8)
+    // 라벨 매핑 (0~8)
     val labelMap = listOf(
         "O", "B-PER", "I-PER", "B-ORG", "I-ORG",
         "B-LOC", "I-LOC", "B-MISC", "I-MISC"
@@ -14,38 +14,41 @@ fun extractNamedEntities(
 
     val result = mutableListOf<Pair<String, String>>()
 
-    // 실제 라벨이 적용된 토큰 인덱스만 뽑기
-    val realTokenIndices = (0 until attentionMask.size).filter { 
-        attentionMask[it] == 1 && specialTokensMask[it] == 0 
+    // 실제 토큰 인덱스만 추출
+    val realTokenIndices = (0 until 512).filter {
+        attentionMask[it] == 1L && specialTokensMask[it] == 0L
     }
+
+    // 해당 인덱스에 대한 offset 정렬
+    val effectiveOffsets = realTokenIndices.map { offsets[it] }
 
     var currentEntity: StringBuilder? = null
     var currentType: String? = null
     var currentStart: Int? = null
-    var previousLabel = "O"
 
-    for ((i, tokenIdx) in realTokenIndices.withIndex()) {
+    for (i in decodedScore.indices) {
         val labelIdx = decodedScore[i]
-        val label = labelMap[labelIdx]
-        val (start, end) = offsets[tokenIdx]
+        val label = labelMap.getOrElse(labelIdx) { "O" }
+        val (start, end) = effectiveOffsets[i]
 
-        if (label == "O" || start >= end) {
-            // 엔티티 종료 처리
+        if (label == "O" || start >= end || end > text.length) {
+            // 엔티티 종료
             if (currentEntity != null && currentType != null && currentStart != null) {
                 result.add(currentType to text.substring(currentStart, start))
                 currentEntity = null
                 currentType = null
                 currentStart = null
             }
-            previousLabel = "O"
             continue
         }
 
-        val (tag, entityType) = label.split("-")
+        val (tag, entityType) = label.split("-").let {
+            if (it.size == 2) it[0] to it[1] else "O" to ""
+        }
 
         when (tag) {
             "B" -> {
-                // 기존 엔티티 종료 후 새로 시작
+                // 기존 엔티티 종료
                 if (currentEntity != null && currentType != null && currentStart != null) {
                     result.add(currentType to currentEntity.toString())
                 }
@@ -58,18 +61,16 @@ fun extractNamedEntities(
                 if (currentEntity != null && currentType == entityType) {
                     currentEntity.append(text.substring(start, end))
                 } else {
-                    // B 없이 잘못 시작된 I → 새 엔티티로 취급
+                    // I단독: 새로 시작
                     currentEntity = StringBuilder(text.substring(start, end))
                     currentType = entityType
                     currentStart = start
                 }
             }
         }
-
-        previousLabel = label
     }
 
-    // 루프 종료 후 마지막 엔티티 추가
+    // 루프 끝났을 때 마지막 엔티티 처리
     if (currentEntity != null && currentType != null && currentStart != null) {
         result.add(currentType to currentEntity.toString())
     }
