@@ -1,41 +1,48 @@
-<?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:padding="24dp"
-    android:layout_width="match_parent"
-    android:layout_height="wrap_content">
+class CRFDecoder(
+    private val numLabels: Int,
+    private val transitionMask: Array<FloatArray> // size: [numLabels][numLabels], 0 or -Inf
+) {
 
-    <LinearLayout
-        android:id="@+id/dialog_container"
-        android:orientation="vertical"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content">
+    fun decode(emissions: Array<FloatArray>, attentionMask: IntArray): IntArray {
+        val seqLen = emissions.size
+        val dp = Array(seqLen) { FloatArray(numLabels) { Float.NEGATIVE_INFINITY } }
+        val backpointers = Array(seqLen) { IntArray(numLabels) }
 
-        <!-- Sources (multi-checkbox) -->
-        <TextView android:text="Select Sources" android:textStyle="bold" />
-        <CheckBox android:id="@+id/check_source_a" android:text="Source A" />
-        <CheckBox android:id="@+id/check_source_b" android:text="Source B" />
-        <CheckBox android:id="@+id/check_source_c" android:text="Source C" />
+        // step 1: initialize with first token
+        for (label in 0 until numLabels) {
+            dp[0][label] = emissions[0][label]
+        }
 
-        <!-- Source (dropdown) -->
-        <TextView android:text="Choose Source" android:textStyle="bold" android:layout_marginTop="16dp"/>
-        <Spinner android:id="@+id/spinner_source"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+        // step 2: dynamic programming
+        for (t in 1 until seqLen) {
+            if (attentionMask[t] == 0) break
 
-        <!-- Title (edit text) -->
-        <TextView android:text="Title" android:textStyle="bold" android:layout_marginTop="16dp"/>
-        <EditText android:id="@+id/edit_title"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="Enter title" />
+            for (curr in 0 until numLabels) {
+                var maxScore = Float.NEGATIVE_INFINITY
+                var bestPrev = 0
+                for (prev in 0 until numLabels) {
+                    val score = dp[t - 1][prev] + transitionMask[prev][curr]
+                    if (score > maxScore) {
+                        maxScore = score
+                        bestPrev = prev
+                    }
+                }
+                dp[t][curr] = maxScore + emissions[t][curr]
+                backpointers[t][curr] = bestPrev
+            }
+        }
 
-        <!-- Timestamp (clickable text field) -->
-        <TextView android:text="Timestamp" android:textStyle="bold" android:layout_marginTop="16dp"/>
-        <EditText android:id="@+id/edit_timestamp"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:focusable="false"
-            android:clickable="true"
-            android:hint="Select date and time" />
-    </LinearLayout>
-</ScrollView>
+        // step 3: backtrace
+        val result = IntArray(seqLen) { 0 }
+        var bestLast = dp[attentionMask.indexOfLast { it == 1 }].withIndex().maxByOrNull { it.value }!!.index
+        result[attentionMask.indexOfLast { it == 1 }] = bestLast
+
+        for (t in (attentionMask.indexOfLast { it == 1 } - 1) downTo 0) {
+            if (attentionMask[t] == 0) break
+            bestLast = backpointers[t + 1][bestLast]
+            result[t] = bestLast
+        }
+
+        return result
+    }
+}
