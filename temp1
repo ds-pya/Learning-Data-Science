@@ -1,48 +1,78 @@
-class CRFDecoder(
-    private val numLabels: Int,
-    private val transitionMask: Array<FloatArray> // size: [numLabels][numLabels], 0 or -Inf
-) {
+fun extractNamedEntities(
+    decodedScore: IntArray, // 예: [0, 1, 2, 0, 3]
+    attentionMask: IntArray, // 128
+    specialTokensMask: IntArray, // 128
+    offsets: List<Pair<Int, Int>>, // 128
+    text: String
+): List<Pair<String, String>> {
 
-    fun decode(emissions: Array<FloatArray>, attentionMask: IntArray): IntArray {
-        val seqLen = emissions.size
-        val dp = Array(seqLen) { FloatArray(numLabels) { Float.NEGATIVE_INFINITY } }
-        val backpointers = Array(seqLen) { IntArray(numLabels) }
+    // 라벨 인덱스를 BIO 라벨로 변환하는 리스트 (0~8)
+    val labelMap = listOf(
+        "O", "B-PER", "I-PER", "B-ORG", "I-ORG",
+        "B-LOC", "I-LOC", "B-MISC", "I-MISC"
+    )
 
-        // step 1: initialize with first token
-        for (label in 0 until numLabels) {
-            dp[0][label] = emissions[0][label]
+    val result = mutableListOf<Pair<String, String>>()
+
+    // 실제 라벨이 적용된 토큰 인덱스만 뽑기
+    val realTokenIndices = (0 until attentionMask.size).filter { 
+        attentionMask[it] == 1 && specialTokensMask[it] == 0 
+    }
+
+    var currentEntity: StringBuilder? = null
+    var currentType: String? = null
+    var currentStart: Int? = null
+    var previousLabel = "O"
+
+    for ((i, tokenIdx) in realTokenIndices.withIndex()) {
+        val labelIdx = decodedScore[i]
+        val label = labelMap[labelIdx]
+        val (start, end) = offsets[tokenIdx]
+
+        if (label == "O" || start >= end) {
+            // 엔티티 종료 처리
+            if (currentEntity != null && currentType != null && currentStart != null) {
+                result.add(currentType to text.substring(currentStart, start))
+                currentEntity = null
+                currentType = null
+                currentStart = null
+            }
+            previousLabel = "O"
+            continue
         }
 
-        // step 2: dynamic programming
-        for (t in 1 until seqLen) {
-            if (attentionMask[t] == 0) break
+        val (tag, entityType) = label.split("-")
 
-            for (curr in 0 until numLabels) {
-                var maxScore = Float.NEGATIVE_INFINITY
-                var bestPrev = 0
-                for (prev in 0 until numLabels) {
-                    val score = dp[t - 1][prev] + transitionMask[prev][curr]
-                    if (score > maxScore) {
-                        maxScore = score
-                        bestPrev = prev
-                    }
+        when (tag) {
+            "B" -> {
+                // 기존 엔티티 종료 후 새로 시작
+                if (currentEntity != null && currentType != null && currentStart != null) {
+                    result.add(currentType to currentEntity.toString())
                 }
-                dp[t][curr] = maxScore + emissions[t][curr]
-                backpointers[t][curr] = bestPrev
+                currentEntity = StringBuilder(text.substring(start, end))
+                currentType = entityType
+                currentStart = start
+            }
+
+            "I" -> {
+                if (currentEntity != null && currentType == entityType) {
+                    currentEntity.append(text.substring(start, end))
+                } else {
+                    // B 없이 잘못 시작된 I → 새 엔티티로 취급
+                    currentEntity = StringBuilder(text.substring(start, end))
+                    currentType = entityType
+                    currentStart = start
+                }
             }
         }
 
-        // step 3: backtrace
-        val result = IntArray(seqLen) { 0 }
-        var bestLast = dp[attentionMask.indexOfLast { it == 1 }].withIndex().maxByOrNull { it.value }!!.index
-        result[attentionMask.indexOfLast { it == 1 }] = bestLast
-
-        for (t in (attentionMask.indexOfLast { it == 1 } - 1) downTo 0) {
-            if (attentionMask[t] == 0) break
-            bestLast = backpointers[t + 1][bestLast]
-            result[t] = bestLast
-        }
-
-        return result
+        previousLabel = label
     }
+
+    // 루프 종료 후 마지막 엔티티 추가
+    if (currentEntity != null && currentType != null && currentStart != null) {
+        result.add(currentType to currentEntity.toString())
+    }
+
+    return result
 }
