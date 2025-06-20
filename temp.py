@@ -22,7 +22,43 @@ def aligned_embedding(text: str, tokenizer, model, word_spans, device="cpu"): en
 
 tokenizers = {name: AutoTokenizer.from_pretrained(name) for name in [TARGET_MODEL_NAME] + BLEND_MODEL_NAMES} blend_models = {name: AutoModel.from_pretrained(name).eval().cpu() for name in BLEND_MODEL_NAMES} target_model = AutoModel.from_pretrained(TARGET_MODEL_NAME).train().to(DEVICE)
 
-optimizer = torch.optim.AdamW(target_model.parameters(), lr=LEARNING_RATE)
+=== TRAINING ===
 
+def train(): optimizer = torch.optim.AdamW(target_model.parameters(), lr=LEARNING_RATE)
 
+for i in tqdm(range(0, len(sentences), BATCH_SIZE)):
+    batch = sentences[i:i+BATCH_SIZE]
+    word_spans_batch = [get_word_spans(x) for x in batch]
+
+    # Compute blended similarity (on CPU)
+    blend_embs_all = []
+    for name in BLEND_MODEL_NAMES:
+        model = blend_models[name]
+        tokenizer = tokenizers[name]
+        emb_list = [aligned_embedding(x, tokenizer, model, word_spans_batch[j], device="cpu")
+                    for j, x in enumerate(batch)]
+        blend_embs_all.append(emb_list)
+
+    blend_sims = []
+    for emb_group in zip(*blend_embs_all):
+        sims = [compute_similarity_matrix(e) for e in emb_group]
+        avg_sim = sum(sims) / len(sims)
+        blend_sims.append(avg_sim)
+
+    # Compute target similarity (on GPU)
+    target_tokenizer = tokenizers[TARGET_MODEL_NAME]
+    target_embs = [aligned_embedding(x, target_tokenizer, target_model, word_spans_batch[j], device=DEVICE)
+                   for j, x in enumerate(batch)]
+    target_sims = [compute_similarity_matrix(e) for e in target_embs]
+
+    # Loss and backward
+    loss = sum(F.mse_loss(t, b.to(DEVICE)) for t, b in zip(target_sims, blend_sims)) / BATCH_SIZE
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+
+torch.save(target_model.state_dict(), SAVE_PATH)
+print(f"Blended model saved to {SAVE_PATH}")
+
+if name == 'main': train()
 
