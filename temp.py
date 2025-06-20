@@ -1,69 +1,28 @@
-override fun onPreferenceTreeClick(preference: Preference): Boolean {
-    when (preference.key) {
-        "your_preference_key" -> {
-            showInputDialog()
-            return true
-        }
-    }
-    return super.onPreferenceTreeClick(preference)
-}
+import torch import torch.nn.functional as F from transformers import AutoTokenizer, AutoModel from typing import List, Tuple from tqdm import tqdm import os
 
-private fun showInputDialog() {
-    val context = requireContext()
-    val dialogView = LayoutInflater.from(context).inflate(R.layout.dialog_input, null)
+=== CONFIG ===
 
-    val checkA = dialogView.findViewById<CheckBox>(R.id.check_source_a)
-    val checkB = dialogView.findViewById<CheckBox>(R.id.check_source_b)
-    val checkC = dialogView.findViewById<CheckBox>(R.id.check_source_c)
+TARGET_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" BLEND_MODEL_NAMES = [ "bge-m3-korean", "xlm-roberta-base", "bert-base-multilingual-uncased" ] BATCH_SIZE = 4 LEARNING_RATE = 3e-5 SAVE_PATH = "blended_model.bin" DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    val spinner = dialogView.findViewById<Spinner>(R.id.spinner_source)
-    val editTitle = dialogView.findViewById<EditText>(R.id.edit_title)
-    val editTimestamp = dialogView.findViewById<EditText>(R.id.edit_timestamp)
+=== DATA ===
 
-    // Spinner setup
-    val options = listOf("Option 1", "Option 2", "Option 3")
-    spinner.adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, options)
+sentences: List[str] = [...]  # 문장 5만 개 리스트를 여기에 삽입하거나 로딩하세요
 
-    // Date & Time Picker on timestamp field
-    var selectedTimestamp: Long? = null
-    editTimestamp.setOnClickListener {
-        val calendar = Calendar.getInstance()
-        DatePickerDialog(context, { _, year, month, day ->
-            TimePickerDialog(context, { _, hour, minute ->
-                calendar.set(year, month, day, hour, minute)
-                selectedTimestamp = calendar.timeInMillis
-                val formatted = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(selectedTimestamp!!))
-                editTimestamp.setText(formatted)
-            }, calendar.get(Calendar.HOUR_OF_DAY), calendar.get(Calendar.MINUTE), true).show()
-        }, calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH), calendar.get(Calendar.DAY_OF_MONTH)).show()
-    }
+=== HELPER FUNCTIONS ===
 
-    AlertDialog.Builder(context)
-        .setTitle("Input")
-        .setView(dialogView)
-        .setPositiveButton("OK") { _, _ ->
-            val sources = mutableListOf<String>()
-            if (checkA.isChecked) sources.add("Source A")
-            if (checkB.isChecked) sources.add("Source B")
-            if (checkC.isChecked) sources.add("Source C")
+def get_word_spans(text: str) -> List[Tuple[int, int]]: spans = [] start = 0 for word in text.split(): end = start + len(word) spans.append((start, end)) start = end + 1 return spans
 
-            val selectedSource = spinner.selectedItem.toString()
-            val title = editTitle.text.toString()
-            val timestamp = selectedTimestamp
+def pool_by_span(token_embs, token_spans, word_spans): pooled_embs = [] for word_start, word_end in word_spans: matched = [ i for i, (tok_start, tok_end) in enumerate(token_spans) if not (tok_end <= word_start or tok_start >= word_end) ] if matched: span_emb = token_embs[matched].mean(dim=0) else: span_emb = torch.zeros(token_embs.size(1), device=token_embs.device) pooled_embs.append(span_emb) return torch.stack(pooled_embs, dim=0)
 
-            // 처리
-            processInput(sources, selectedSource, title, timestamp)
-        }
-        .setNegativeButton("Cancel", null)
-        .show()
-}
+def compute_similarity_matrix(x): x = F.normalize(x, dim=-1) return torch.matmul(x, x.transpose(-1, -2))
 
-private fun processInput(
-    sources: List<String>,
-    source: String,
-    title: String,
-    timestamp: Long?
-) {
-    Log.d("Input", "Sources=$sources, Source=$source, Title=$title, Timestamp=$timestamp")
-    // 여기에 실제 처리 로직 작성
-}
+def aligned_embedding(text: str, tokenizer, model, word_spans, device="cpu"): encoded = tokenizer(text, return_tensors="pt", return_offsets_mapping=True, truncation=True).to(device) offset_mapping = encoded.pop('offset_mapping')[0].tolist() with torch.no_grad(): outputs = model(**encoded).last_hidden_state[0] return pool_by_span(outputs, offset_mapping, word_spans)
+
+=== LOAD MODELS ===
+
+tokenizers = {name: AutoTokenizer.from_pretrained(name) for name in [TARGET_MODEL_NAME] + BLEND_MODEL_NAMES} blend_models = {name: AutoModel.from_pretrained(name).eval().cpu() for name in BLEND_MODEL_NAMES} target_model = AutoModel.from_pretrained(TARGET_MODEL_NAME).train().to(DEVICE)
+
+optimizer = torch.optim.AdamW(target_model.parameters(), lr=LEARNING_RATE)
+
+
+
