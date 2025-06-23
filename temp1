@@ -1,7 +1,21 @@
-fun cleanEntity(word: String): String? {
-    // 1. 양끝 특수문자, 공백, 이모지 제거 (정규식 기반)
-    val cleaned = word.replace(Regex("^[\\p{P}\\p{S}\\p{Z}\\p{C}]+|[\\p{P}\\p{S}\\p{Z}\\p{C}]+$"), "")
-
-    // 2. 한 글자 이하이면 무시
-    return if (cleaned.length <= 1) null else cleaned
-}
+<style>
+    body {
+        background-color: #f8f9fa;
+    }
+    .main-body {
+        max-width: 900px;
+        margin: 0 auto;
+        background-color: white;
+        padding: 2rem;
+        border-radius: 10px;
+        box-shadow: 0 0 20px rgba(0, 0, 0, 0.05);
+    }
+    .custom-tab {
+        font-size: 18px;
+        padding: 10px 20px;
+    }
+    .custom-tab-selected {
+        border-bottom: 3px solid #0d6efd !important;
+        font-weight: bold;
+    }
+</style>
