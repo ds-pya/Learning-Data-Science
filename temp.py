@@ -1,44 +1,56 @@
-# utils/plot_generator.py
-import pandas as pd
 import plotly.graph_objs as go
+import plotly.express as px
 
-def make_bar_plot(records):
-    df = pd.DataFrame(records)
+def make_stacked_bar_custom(keyword_list, score_list, source_score_list, marker):
+    # 모든 source 추출
+    all_sources = set()
+    for d in source_score_list:
+        all_sources.update(d.keys())
+    all_sources = sorted(all_sources)
 
-    # 예시: 계층적 인덱스 2레벨을 "index_1", "index_2" 컬럼으로 가정
-    required_cols = {"index_1", "index_2", "value"}
-    if not required_cols.issubset(df.columns):
-        raise ValueError(f"Required columns: {required_cols}")
+    # 선 색상 매핑
+    border_palette = px.colors.qualitative.Set1
+    source_to_border = {
+        source: border_palette[i % len(border_palette)]
+        for i, source in enumerate(all_sources)
+    }
 
-    # 고정된 인덱스 셋 (순서를 유지하고 누락된 항목은 0으로)
-    all_index = pd.MultiIndex.from_tuples([
-        ('A', 'a1'), ('A', 'a2'),
-        ('B', 'b1'), ('B', 'b2'),
-        ('C', 'c1')
-    ], names=["index_1", "index_2"])
+    traces = []
 
-    df = df.set_index(["index_1", "index_2"]).reindex(all_index, fill_value=0)
-    df = df.reset_index()
+    for source in all_sources:
+        x, y, colors, line_colors, hovertexts = [], [], [], [], []
 
-    # Plotly sunburst로 folding 계층적 바 그래프 흉내 가능 (가로 바 지원 X)
-    fig = go.Figure()
+        for i, keyword in enumerate(keyword_list):
+            source_score = source_score_list[i].get(source, 0.0)
+            if source_score > 0:
+                x.append(source_score)
+                y.append(keyword)
+                colors.append(marker.get(keyword, "#888888"))
+                line_colors.append(source_to_border[source])
+                hovertexts.append(f"<b>{keyword}</b><br>Source: {source}<br>Score: {source_score:.2f}")
 
-    for level1 in df['index_1'].unique():
-        sub_df = df[df['index_1'] == level1]
-        fig.add_trace(go.Bar(
-            y=[f"{level1} / {lvl2}" for lvl2 in sub_df["index_2"]],
-            x=sub_df["value"],
-            name=level1,
-            orientation="h",
-            showlegend=False
+        traces.append(go.Bar(
+            x=x,
+            y=y,
+            orientation='h',
+            name=source,
+            marker=dict(
+                color=colors,
+                line=dict(color=line_colors, width=2)
+            ),
+            hoverinfo="text",
+            hovertext=hovertexts,
+            showlegend=True
         ))
 
+    fig = go.Figure(traces)
     fig.update_layout(
-        title="📊 Hierarchical Horizontal Bar Plot",
         barmode="stack",
+        title="Stacked Horizontal Bar Chart",
         paper_bgcolor="#1f2c3d",
         plot_bgcolor="#1f2c3d",
         font_color="white",
-        height=400 + 20 * len(df)
+        margin=dict(l=10, r=10, t=40, b=10),
+        legend=dict(title="Source", traceorder="normal", orientation="v", x=1.02, y=1)
     )
     return fig
