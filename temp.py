@@ -1,77 +1,40 @@
-import plotly.graph_objs as go
+import torch
+import torch.nn as nn
+import math
 
-def make_stacked_bar(keyword_list, score_list, source_score_list, marker):
-    import plotly.express as px
+# LoRA adapter 정의
+class LoRAAdapter(nn.Module):
+    def __init__(self, hidden_dim, rank):
+        super().__init__()
+        self.lora_down = nn.Linear(hidden_dim, rank, bias=False)
+        self.lora_up = nn.Linear(rank, hidden_dim, bias=False)
 
-    # 정의된 source → 색상 매핑
-    source_to_color = {
-        "naver": "#d62728",
-        "google": "#1f77b4",
-        "bing": "#2ca02c",
-        "youtube": "#9467bd",
-        "kakao": "#ff7f0e"
-    }
+        # 초기화: LoRA 논문 방식
+        nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_up.weight)
 
-    all_sources = list(source_to_color.keys())
+    def forward(self, x):
+        return x + self.lora_up(self.lora_down(x))
 
-    traces = []
 
-    for source in all_sources:
-        x, y, hovertexts = [], [], []
+# 전체 모델 병렬 구조 정의
+class ParallelLoRAHeads(nn.Module):
+    def __init__(self, base_model, hidden_dim, rank, mlp1, mlp2):
+        super().__init__()
+        self.base_model = base_model  # shared encoder
 
-        for i, keyword in enumerate(keyword_list):
-            score = source_score_list[i].get(source, 0.0)
-            if score > 0:
-                x.append(score)
-                y.append(keyword)
-                hovertexts.append(
-                    f"<b>{keyword}</b><br>Source: {source}<br>Score: {round(score, 3)}"
-                )
+        self.lora1 = LoRAAdapter(hidden_dim, rank)
+        self.lora2 = LoRAAdapter(hidden_dim, rank)
 
-        traces.append(go.Bar(
-            x=x,
-            y=y,
-            orientation="h",
-            name=source,
-            marker=dict(
-                color=[source_to_color[source]] * len(x),
-                line=dict(width=0)
-            ),
-            hoverinfo="text",
-            hovertext=hovertexts,
-            showlegend=False
-        ))
+        self.mlp1 = mlp1
+        self.mlp2 = mlp2
 
-    fig = go.Figure(traces)
+    def forward(self, input_ids, attention_mask):
+        # 공유 encoder 실행
+        base_output = self.base_model(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
 
-    # 총합 점수 텍스트 추가
-    for keyword, total in zip(keyword_list, score_list):
-        if total > 0:
-            fig.add_trace(go.Scatter(
-                x=[total],
-                y=[keyword],
-                mode="text",
-                text=[f"{round(total, 3)}"],
-                textposition="middle right",
-                showlegend=False,
-                hoverinfo="skip",
-                textfont=dict(color="black")
-            ))
+        # 각 LoRA + MLP 적용
+        out1 = self.mlp1(self.lora1(base_output))
+        out2 = self.mlp2(self.lora2(base_output))
 
-    # y축 텍스트 색상 설정
-    tick_colors = [marker.get(k, "black") for k in keyword_list]
-
-    fig.update_layout(
-        barmode="stack",
-        xaxis=dict(range=[0, 1]),
-        yaxis=dict(
-            tickfont=dict(color=tick_colors)
-        ),
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-        font=dict(color="black"),
-        margin=dict(l=10, r=80, t=40, b=10),
-        height=40 * len(keyword_list) + 200
-    )
-
-    return fig
+        return out1, out2
