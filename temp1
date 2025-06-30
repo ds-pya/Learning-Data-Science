@@ -1,25 +1,42 @@
 FROM ubuntu:22.04
 
-# 1. 필수 패키지 설치
-RUN apt update && apt install -y \
-    wget curl git build-essential software-properties-common \
+# 1. 시스템 패키지 설치
+RUN apt update && DEBIAN_FRONTEND=noninteractive apt install -y \
+    software-properties-common build-essential git wget curl ca-certificates \
     python3.10 python3.10-dev python3.10-venv python3-pip \
-    gcc g++ cmake libssl-dev
+    cmake libssl-dev
 
-# 2. 심볼릭 링크 설정 (python/pip 명확화)
+# 2. python/pip 심볼릭 링크 설정
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 && \
     update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
 
-# 3. PyTorch + Transformers + Olive + ONNXRuntime 설치
+# 3. pip 업그레이드
 RUN pip install --upgrade pip
+
+# 4. PyTorch CPU 전용 설치
 RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-RUN pip install transformers peft onnx onnxruntime onnxruntime-genai olive-ai
 
-# 4. (옵션) git clone & build onnxruntime-genai if modifying source
-# RUN git clone https://github.com/microsoft/onnxruntime-genai.git /opt/onnxruntime-genai
-# RUN cd /opt/onnxruntime-genai && python build.py --config Release
+# 5. 필요한 Python 패키지
+RUN pip install \
+    onnx \
+    transformers \
+    peft \
+    accelerate \
+    sentencepiece \
+    datasets \
+    olive-ai
 
-# 5. 작업 디렉토리 설정
+# 6. onnxruntime-genai clone 및 빌드
+WORKDIR /opt
+RUN git clone https://github.com/microsoft/onnxruntime-genai.git
+
+WORKDIR /opt/onnxruntime-genai
+RUN python build.py --config Release --build_wheel
+
+# 7. 빌드된 wheel 설치
+RUN pip install build/Linux/Release/dist/onnxruntime_genai-*.whl
+
+# 8. 작업 디렉토리
 WORKDIR /workspace
 COPY . /workspace
 
