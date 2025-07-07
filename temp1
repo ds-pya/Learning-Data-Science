@@ -1,17 +1,20 @@
-import android.os.Debug
-import android.util.Log
-import java.text.DecimalFormat
+fun getPredictedLabels(scores: FloatArray): List<Pair<String, Float>> {
+    val thresholded = outputs
+        .mapIndexedNotNull { index, (label, threshold) ->
+            val score = scores.getOrNull(index) ?: return@mapIndexedNotNull null
+            if (score >= threshold) Pair(label, score) else null
+        }
 
-object MemoryLogger {
-    private val formatter = DecimalFormat("#,###")
+    val hasRealLabels = thresholded.any { it.first != "none" }
 
-    fun log(tag: String = "MemoryLogger", label: String = "") {
-        val runtime = Runtime.getRuntime()
-        val usedMemInBytes = runtime.totalMemory() - runtime.freeMemory()
-        val usedMemInMB = usedMemInBytes / 1024 / 1024
-
-        val nativeHeapAllocatedSize = Debug.getNativeHeapAllocatedSize() / 1024 / 1024
-
-        Log.i(tag, "$label Heap used: ${formatter.format(usedMemInMB)} MB, Native heap: ${formatter.format(nativeHeapAllocatedSize)} MB")
+    return if (hasRealLabels) {
+        thresholded.filterNot { it.first == "none" }
+    } else {
+        val noneScore = scores.getOrNull(outputs.indexOfFirst { it.first == "none" })
+        if (noneScore != null && noneScore >= outputs.firstOrNull { it.first == "none" }?.second ?: Float.MAX_VALUE) {
+            listOf(Pair("none", noneScore))
+        } else {
+            listOf(Pair("none", scores.getOrNull(outputs.indexOfFirst { it.first == "none" }) ?: 0f))
+        }
     }
 }
