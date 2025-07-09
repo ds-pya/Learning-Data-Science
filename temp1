@@ -1,20 +1,71 @@
-fun getPredictedLabels(scores: FloatArray): List<Pair<String, Float>> {
-    val thresholded = outputs
-        .mapIndexedNotNull { index, (label, threshold) ->
-            val score = scores.getOrNull(index) ?: return@mapIndexedNotNull null
-            if (score >= threshold) Pair(label, score) else null
-        }
+typedef CanvasOverlay = void Function(Canvas canvas);
 
-    val hasRealLabels = thresholded.any { it.first != "none" }
+CanvasOverlay? getBubbleOverlayPainter({
+  required BubbleStatus status,
+  required Offset center,
+  required double radius,
+  required double textHeight,
+}) {
+  final double fontSize = radius * 0.3;
+  const double padding = 6.0;
 
-    return if (hasRealLabels) {
-        thresholded.filterNot { it.first == "none" }
-    } else {
-        val noneScore = scores.getOrNull(outputs.indexOfFirst { it.first == "none" })
-        if (noneScore != null && noneScore >= outputs.firstOrNull { it.first == "none" }?.second ?: Float.MAX_VALUE) {
-            listOf(Pair("none", noneScore))
-        } else {
-            listOf(Pair("none", scores.getOrNull(outputs.indexOfFirst { it.first == "none" }) ?: 0f))
-        }
-    }
+  switch (status) {
+    case BubbleStatus.hot:
+    case BubbleStatus.new_:
+      final String label = status == BubbleStatus.hot ? '🔥 HOT' : '✨ NEW';
+      final Color bgColor = status == BubbleStatus.hot ? Colors.red : Colors.green;
+
+      return (Canvas canvas) {
+        final textStyle = TextStyle(
+          fontSize: fontSize,
+          fontWeight: FontWeight.bold,
+          color: Colors.white,
+        );
+
+        final tp = TextPainter(
+          text: TextSpan(text: label, style: textStyle),
+          textDirection: TextDirection.ltr,
+        )..layout();
+
+        final width = tp.width + 2 * padding;
+        final height = tp.height + 2 * padding;
+
+        final rect = RRect.fromRectAndRadius(
+          Rect.fromCenter(
+            center: Offset(center.dx, center.dy - radius - height / 2 - 4),
+            width: width,
+            height: height,
+          ),
+          Radius.circular(height / 2),
+        );
+
+        canvas.drawRRect(rect, Paint()..color = bgColor);
+        tp.paint(canvas, Offset(rect.left + padding, rect.top + padding));
+      };
+
+    case BubbleStatus.up:
+    case BubbleStatus.down:
+      final String arrow = status == BubbleStatus.up ? '▲' : '▼';
+      final Color color = status == BubbleStatus.up ? Colors.blue : Colors.grey;
+      final bool isUp = status == BubbleStatus.up;
+
+      return (Canvas canvas) {
+        final tp = TextPainter(
+          text: TextSpan(
+            text: arrow,
+            style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.bold, color: color),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+
+        final yOffset = isUp
+            ? center.dy - textHeight / 2 - tp.height - 2
+            : center.dy + textHeight / 2 + 2;
+
+        tp.paint(canvas, Offset(center.dx - tp.width / 2, yOffset));
+      };
+
+    case BubbleStatus.none:
+      return null;
+  }
 }
