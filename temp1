@@ -1,6 +1,9 @@
-typedef CanvasOverlay = void Function(Canvas canvas);
+import 'package:flutter/material.dart';
 
-CanvasOverlay? getBubbleOverlayPainter({
+enum BubbleStatus { hot, new_, up, down, none }
+
+void drawBubbleStatusBadge({
+  required Canvas canvas,
   required BubbleStatus status,
   required Offset center,
   required double radius,
@@ -15,33 +18,32 @@ CanvasOverlay? getBubbleOverlayPainter({
       final String label = status == BubbleStatus.hot ? '🔥 HOT' : '✨ NEW';
       final Color bgColor = status == BubbleStatus.hot ? Colors.red : Colors.green;
 
-      return (Canvas canvas) {
-        final textStyle = TextStyle(
-          fontSize: fontSize,
-          fontWeight: FontWeight.bold,
-          color: Colors.white,
-        );
+      final textStyle = TextStyle(
+        fontSize: fontSize,
+        fontWeight: FontWeight.bold,
+        color: Colors.white,
+      );
 
-        final tp = TextPainter(
-          text: TextSpan(text: label, style: textStyle),
-          textDirection: TextDirection.ltr,
-        )..layout();
+      final tp = TextPainter(
+        text: TextSpan(text: label, style: textStyle),
+        textDirection: TextDirection.ltr,
+      )..layout();
 
-        final width = tp.width + 2 * padding;
-        final height = tp.height + 2 * padding;
+      final width = tp.width + 2 * padding;
+      final height = tp.height + 2 * padding;
 
-        final rect = RRect.fromRectAndRadius(
-          Rect.fromCenter(
-            center: Offset(center.dx, center.dy - radius - height / 2 - 4),
-            width: width,
-            height: height,
-          ),
-          Radius.circular(height / 2),
-        );
+      final rrect = RRect.fromRectAndRadius(
+        Rect.fromCenter(
+          center: Offset(center.dx, center.dy - radius - height / 2 - 4),
+          width: width,
+          height: height,
+        ),
+        Radius.circular(height / 2),
+      );
 
-        canvas.drawRRect(rect, Paint()..color = bgColor);
-        tp.paint(canvas, Offset(rect.left + padding, rect.top + padding));
-      };
+      canvas.drawRRect(rrect, Paint()..color = bgColor);
+      tp.paint(canvas, Offset(rrect.left + padding, rrect.top + padding));
+      break;
 
     case BubbleStatus.up:
     case BubbleStatus.down:
@@ -49,23 +51,22 @@ CanvasOverlay? getBubbleOverlayPainter({
       final Color color = status == BubbleStatus.up ? Colors.blue : Colors.grey;
       final bool isUp = status == BubbleStatus.up;
 
-      return (Canvas canvas) {
-        final tp = TextPainter(
-          text: TextSpan(
-            text: arrow,
-            style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.bold, color: color),
-          ),
-          textDirection: TextDirection.ltr,
-        )..layout();
+      final tp = TextPainter(
+        text: TextSpan(
+          text: arrow,
+          style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.bold, color: color),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
 
-        final yOffset = isUp
-            ? center.dy - textHeight / 2 - tp.height - 2
-            : center.dy + textHeight / 2 + 2;
+      final yOffset = isUp
+          ? center.dy - textHeight / 2 - tp.height - 2
+          : center.dy + textHeight / 2 + 2;
 
-        tp.paint(canvas, Offset(center.dx - tp.width / 2, yOffset));
-      };
+      tp.paint(canvas, Offset(center.dx - tp.width / 2, yOffset));
+      break;
 
     case BubbleStatus.none:
-      return null;
+      return;
   }
 }
