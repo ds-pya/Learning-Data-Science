@@ -1,60 +1,41 @@
-import torch
-import torch.nn as nn
-from peft import get_peft_model, LoraConfig
-from transformers import AutoModelForCausalLM
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
 
-class QwenSentenceClassifier(nn.Module):
-    def __init__(self, model_name, num_labels, lora_config: LoraConfig):
-        super().__init__()
-        self.base_model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=True)
-        self.encoder = get_peft_model(self.base_model, lora_config)
-        self.hidden_size = self.base_model.config.hidden_size
+from time import sleep
 
-        self.mlp_head = nn.Sequential(
-            nn.Linear(self.hidden_size, self.hidden_size),
-            nn.ReLU(),
-            nn.Linear(self.hidden_size, num_labels)
-        )
+# URL 리스트
+url_list = [
+    "https://www.google.com",
+    "https://www.wikipedia.org",
+    "https://www.python.org"
+]
 
-    def forward(self, input_ids, attention_mask):
-        out = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
-        hidden = out.last_hidden_state  # shape: (B, T, H)
+# 크롬 옵션 설정 (브라우저 띄우기 싫으면 headless=True 설정)
+chrome_options = Options()
+chrome_options.add_argument("--headless")  # UI 없이 실행
+chrome_options.add_argument("--no-sandbox")
+chrome_options.add_argument("--disable-dev-shm-usage")
 
-        # Use mean pooling (ignoring padding)
-        mask = attention_mask.unsqueeze(-1).float()  # (B, T, 1)
-        summed = (hidden * mask).sum(1)
-        count = mask.sum(1).clamp(min=1e-6)
-        pooled = summed / count  # (B, H)
+# 드라이버 실행
+driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
 
-        logits = self.mlp_head(pooled)  # (B, num_labels)
-        return logits
+# 결과 저장
+results = {}
 
+for url in url_list:
+    try:
+        driver.get(url)
+        sleep(1)  # 페이지 로딩 대기 (필요시 조정)
+        title = driver.title
+        results[url] = title
+    except Exception as e:
+        results[url] = f"Error: {e}"
 
-# 모델 초기화
-model_name = "Qwen/Qwen2.5-0.5B"
-lora_config = LoraConfig(
-    r=8,
-    lora_alpha=32,
-    target_modules=["c_attn", "q_proj", "v_proj"],  # depends on Qwen internals
-    lora_dropout=0.1,
-    bias="none",
-    task_type="CAUSAL_LM"
-)
-model = QwenSentenceClassifier(model_name, num_labels=3, lora_config=lora_config)
+# 드라이버 종료
+driver.quit()
 
-# dummy input
-dummy_input = {
-    "input_ids": torch.randint(0, 100, (1, 32)),
-    "attention_mask": torch.ones(1, 32, dtype=torch.int64),
-}
-
-# Export
-torch.onnx.export(
-    model,
-    (dummy_input["input_ids"], dummy_input["attention_mask"]),
-    "qwen_cls.onnx",
-    input_names=["input_ids", "attention_mask"],
-    output_names=["logits"],
-    dynamic_axes={"input_ids": {1: "seq"}, "attention_mask": {1: "seq"}},
-    opset_version=17
-)
+# 결과 출력
+for url, title in results.items():
+    print(f"{url} -> {title}")
