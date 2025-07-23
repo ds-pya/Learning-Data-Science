@@ -1,41 +1,36 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
+import numpy as np
+import heapq
 
-from time import sleep
+def topk_viterbi_decode_np(emissions, transitions, k=10, mask=None):
+    """
+    emissions: (seq_len, num_tags)
+    transitions: (num_tags, num_tags)
+    mask: (seq_len,) or None
+    """
+    seq_len, num_tags = emissions.shape
 
-# URL 리스트
-url_list = [
-    "https://www.google.com",
-    "https://www.wikipedia.org",
-    "https://www.python.org"
-]
+    # heap: [(-score, path)]  # use negative for max heap
+    dp = [ [(-emissions[0][tag], [tag])] for tag in range(num_tags) ]
 
-# 크롬 옵션 설정 (브라우저 띄우기 싫으면 headless=True 설정)
-chrome_options = Options()
-chrome_options.add_argument("--headless")  # UI 없이 실행
-chrome_options.add_argument("--no-sandbox")
-chrome_options.add_argument("--disable-dev-shm-usage")
+    for t in range(1, seq_len):
+        new_dp = [[] for _ in range(num_tags)]
+        for curr_tag in range(num_tags):
+            candidates = []
+            for prev_tag in range(num_tags):
+                for prev_score, prev_path in dp[prev_tag]:
+                    score = prev_score - transitions[prev_tag][curr_tag] - emissions[t][curr_tag]
+                    path = prev_path + [curr_tag]
+                    candidates.append((score, path))
+            # 상위 k개 유지
+            new_dp[curr_tag] = heapq.nsmallest(k, candidates)
+        dp = new_dp
 
-# 드라이버 실행
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    # 종료점에서 상위 k개 선택
+    all_paths = []
+    for tag in range(num_tags):
+        all_paths.extend(dp[tag])
+    topk = heapq.nsmallest(k, all_paths)
 
-# 결과 저장
-results = {}
-
-for url in url_list:
-    try:
-        driver.get(url)
-        sleep(1)  # 페이지 로딩 대기 (필요시 조정)
-        title = driver.title
-        results[url] = title
-    except Exception as e:
-        results[url] = f"Error: {e}"
-
-# 드라이버 종료
-driver.quit()
-
-# 결과 출력
-for url, title in results.items():
-    print(f"{url} -> {title}")
+    # 우도는 음수로 저장되어 있으므로 다시 반대로 변환
+    topk = [(-score, path) for score, path in topk]
+    return topk  # list of (score, path)
