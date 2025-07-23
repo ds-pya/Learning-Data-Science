@@ -1,83 +1,111 @@
-import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
-
 class DataItem {
-  final String type; // 'youtube', 'internet', 'other'
   final String title;
   final String? url;
   final String? packageName;
   final List<String> keywords;
+  final DateTime timestamp;
 
   DataItem({
-    required this.type,
     required this.title,
     this.url,
     this.packageName,
     required this.keywords,
+    required this.timestamp,
   });
 }
 
-class DataListView extends StatelessWidget {
+class DataCardListView extends StatelessWidget {
   final List<DataItem> items;
 
-  const DataListView({super.key, required this.items});
-
-  Widget _buildLeadingIcon(String? packageName) {
-    // 실제 앱 아이콘은 가져오기 어려우므로 예시로 대체
-    return CircleAvatar(
-      backgroundImage: AssetImage('assets/icons/${packageName ?? "default"}.png'),
-      radius: 24,
-    );
-  }
-
-  Widget _buildUrlButton(String? url) {
-    if (url == null) return SizedBox.shrink();
-    return IconButton(
-      icon: Icon(Icons.open_in_new),
-      onPressed: () async {
-        final uri = Uri.parse(url);
-        if (await canLaunchUrl(uri)) {
-          await launchUrl(uri);
-        }
-      },
-    );
-  }
+  const DataCardListView({super.key, required this.items});
 
   @override
   Widget build(BuildContext context) {
     return ListView.separated(
       padding: const EdgeInsets.all(12),
       itemCount: items.length,
-      separatorBuilder: (_, __) => Divider(),
+      separatorBuilder: (_, __) => const SizedBox(height: 12),
       itemBuilder: (context, index) {
         final item = items[index];
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                _buildLeadingIcon(item.packageName),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    item.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 15),
-                  ),
+        return Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black12,
+                blurRadius: 6,
+                offset: Offset(0, 3),
+              ),
+            ],
+          ),
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 왼쪽 아이콘
+              CircleAvatar(
+                backgroundImage: AssetImage('assets/icons/${item.packageName ?? "default"}.png'),
+                radius: 24,
+              ),
+              const SizedBox(width: 12),
+              // 중앙 텍스트 영역
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 상단: timestamp
+                    Text(
+                      _formatTimestamp(item.timestamp),
+                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                    const SizedBox(height: 4),
+                    // 중단: 텍스트
+                    Text(
+                      item.title,
+                      style: TextStyle(fontSize: 15),
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 6),
+                    // 하단: #tag
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: -4,
+                      children: item.keywords.map((kw) {
+                        return Text(
+                          '#$kw',
+                          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                        );
+                      }).toList(),
+                    ),
+                  ],
                 ),
-                _buildUrlButton(item.url),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 6,
-              runSpacing: -8,
-              children: item.keywords.map((kw) => Chip(label: Text('#$kw'))).toList(),
-            )
-          ],
+              ),
+              const SizedBox(width: 8),
+              // 오른쪽 URL 버튼
+              if (item.url != null)
+                IconButton(
+                  icon: Icon(Icons.open_in_new),
+                  onPressed: () async {
+                    final uri = Uri.parse(item.url!);
+                    if (await canLaunchUrl(uri)) {
+                      await launchUrl(uri);
+                    }
+                  },
+                ),
+            ],
+          ),
         );
       },
     );
+  }
+
+  String _formatTimestamp(DateTime ts) {
+    final now = DateTime.now();
+    if (now.difference(ts).inDays == 0) {
+      return '오늘 ${ts.hour}:${ts.minute.toString().padLeft(2, '0')}';
+    }
+    return '${ts.year}/${ts.month}/${ts.day} ${ts.hour}:${ts.minute.toString().padLeft(2, '0')}';
   }
 }
