@@ -1,72 +1,83 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-enum BubbleStatus { hot, new_, up, down, none }
+class DataItem {
+  final String type; // 'youtube', 'internet', 'other'
+  final String title;
+  final String? url;
+  final String? packageName;
+  final List<String> keywords;
 
-void drawBubbleStatusBadge({
-  required Canvas canvas,
-  required BubbleStatus status,
-  required Offset center,
-  required double radius,
-  required double textHeight,
-}) {
-  final double fontSize = radius * 0.3;
-  const double padding = 6.0;
+  DataItem({
+    required this.type,
+    required this.title,
+    this.url,
+    this.packageName,
+    required this.keywords,
+  });
+}
 
-  switch (status) {
-    case BubbleStatus.hot:
-    case BubbleStatus.new_:
-      final String label = status == BubbleStatus.hot ? '🔥 HOT' : '✨ NEW';
-      final Color bgColor = status == BubbleStatus.hot ? Colors.red : Colors.green;
+class DataListView extends StatelessWidget {
+  final List<DataItem> items;
 
-      final textStyle = TextStyle(
-        fontSize: fontSize,
-        fontWeight: FontWeight.bold,
-        color: Colors.white,
-      );
+  const DataListView({super.key, required this.items});
 
-      final tp = TextPainter(
-        text: TextSpan(text: label, style: textStyle),
-        textDirection: TextDirection.ltr,
-      )..layout();
+  Widget _buildLeadingIcon(String? packageName) {
+    // 실제 앱 아이콘은 가져오기 어려우므로 예시로 대체
+    return CircleAvatar(
+      backgroundImage: AssetImage('assets/icons/${packageName ?? "default"}.png'),
+      radius: 24,
+    );
+  }
 
-      final width = tp.width + 2 * padding;
-      final height = tp.height + 2 * padding;
+  Widget _buildUrlButton(String? url) {
+    if (url == null) return SizedBox.shrink();
+    return IconButton(
+      icon: Icon(Icons.open_in_new),
+      onPressed: () async {
+        final uri = Uri.parse(url);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri);
+        }
+      },
+    );
+  }
 
-      final rrect = RRect.fromRectAndRadius(
-        Rect.fromCenter(
-          center: Offset(center.dx, center.dy - radius - height / 2 - 4),
-          width: width,
-          height: height,
-        ),
-        Radius.circular(height / 2),
-      );
-
-      canvas.drawRRect(rrect, Paint()..color = bgColor);
-      tp.paint(canvas, Offset(rrect.left + padding, rrect.top + padding));
-      break;
-
-    case BubbleStatus.up:
-    case BubbleStatus.down:
-      final String arrow = status == BubbleStatus.up ? '▲' : '▼';
-      final Color color = status == BubbleStatus.up ? Colors.blue : Colors.grey;
-      final bool isUp = status == BubbleStatus.up;
-
-      final tp = TextPainter(
-        text: TextSpan(
-          text: arrow,
-          style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.bold, color: color),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-
-      final yOffset = isUp
-          ? center.dy - textHeight / 2 - tp.height - 2
-          : center.dy + textHeight / 2 + 2;
-
-      tp.paint(canvas, Offset(center.dx - tp.width / 2, yOffset));
-      break;
-
-    case BubbleStatus.none:
-      return;
+  @override
+  Widget build(BuildContext context) {
+    return ListView.separated(
+      padding: const EdgeInsets.all(12),
+      itemCount: items.length,
+      separatorBuilder: (_, __) => Divider(),
+      itemBuilder: (context, index) {
+        final item = items[index];
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                _buildLeadingIcon(item.packageName),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    item.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 15),
+                  ),
+                ),
+                _buildUrlButton(item.url),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: -8,
+              children: item.keywords.map((kw) => Chip(label: Text('#$kw'))).toList(),
+            )
+          ],
+        );
+      },
+    );
   }
 }
