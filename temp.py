@@ -1,36 +1,36 @@
+from sklearn.metrics import classification_report, precision_recall_curve
 import numpy as np
-import heapq
+import pandas as pd
 
-def topk_viterbi_decode_np(emissions, transitions, k=10, mask=None):
-    """
-    emissions: (seq_len, num_tags)
-    transitions: (num_tags, num_tags)
-    mask: (seq_len,) or None
-    """
-    seq_len, num_tags = emissions.shape
+# a: 예측 확률값, b: 정답 (bool), c: 라벨 이름
+a = np.array(a)  # shape = (num_samples, n_labels)
+b = np.array(b)  # same shape
 
-    # heap: [(-score, path)]  # use negative for max heap
-    dp = [ [(-emissions[0][tag], [tag])] for tag in range(num_tags) ]
+# 1. classification report (threshold = 0.5 기준 이진화)
+pred_binary = (a >= 0.5).astype(int)
+true_binary = b.astype(int)
 
-    for t in range(1, seq_len):
-        new_dp = [[] for _ in range(num_tags)]
-        for curr_tag in range(num_tags):
-            candidates = []
-            for prev_tag in range(num_tags):
-                for prev_score, prev_path in dp[prev_tag]:
-                    score = prev_score - transitions[prev_tag][curr_tag] - emissions[t][curr_tag]
-                    path = prev_path + [curr_tag]
-                    candidates.append((score, path))
-            # 상위 k개 유지
-            new_dp[curr_tag] = heapq.nsmallest(k, candidates)
-        dp = new_dp
+print(classification_report(true_binary, pred_binary, target_names=c))
 
-    # 종료점에서 상위 k개 선택
-    all_paths = []
-    for tag in range(num_tags):
-        all_paths.extend(dp[tag])
-    topk = heapq.nsmallest(k, all_paths)
+# 2. precision > 0.9를 만족하는 최소 threshold 계산
+thresholds_dict = {}
 
-    # 우도는 음수로 저장되어 있으므로 다시 반대로 변환
-    topk = [(-score, path) for score, path in topk]
-    return topk  # list of (score, path)
+for i, label in enumerate(c):
+    precision, recall, thresholds = precision_recall_curve(true_binary[:, i], a[:, i])
+    # precision 배열은 길이가 thresholds+1 이므로 trimming 필요
+    thresholds = thresholds  # shape = len(thresholds)
+
+    # precision > 0.9 조건 만족하는 최소 threshold
+    above_thresh = np.where(precision[:-1] >= 0.9)[0]  # 마지막 precision은 무시
+    if len(above_thresh) > 0:
+        min_thresh = thresholds[above_thresh[0]]
+    else:
+        min_thresh = None  # precision이 0.9 넘는 지점 없음
+    thresholds_dict[label] = min_thresh
+
+# 보기 좋게 출력
+df_thresholds = pd.DataFrame({
+    'label': c,
+    'min_threshold_for_precision>0.9': [thresholds_dict[l] for l in c]
+})
+print(df_thresholds)
