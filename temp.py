@@ -1,36 +1,41 @@
-from sklearn.metrics import classification_report, precision_recall_curve
+from sklearn.metrics import precision_recall_curve, classification_report
 import numpy as np
 import pandas as pd
 
-# a: 예측 확률값, b: 정답 (bool), c: 라벨 이름
-a = np.array(a)  # shape = (num_samples, n_labels)
-b = np.array(b)  # same shape
+# 입력
+# a: List[List[float]] → 예측 확률값 (sigmoid 통과된 값)
+# b: List[List[bool]] → 정답 (멀티라벨 ground truth)
+# c: List[str]         → 라벨 이름 (길이 = n)
 
-# 1. classification report (threshold = 0.5 기준 이진화)
-pred_binary = (a >= 0.5).astype(int)
-true_binary = b.astype(int)
+a = np.array(a)
+b = np.array(b).astype(int)
+n_labels = len(c)
 
-print(classification_report(true_binary, pred_binary, target_names=c))
-
-# 2. precision > 0.9를 만족하는 최소 threshold 계산
 thresholds_dict = {}
+binary_preds = np.zeros_like(a)
 
-for i, label in enumerate(c):
-    precision, recall, thresholds = precision_recall_curve(true_binary[:, i], a[:, i])
-    # precision 배열은 길이가 thresholds+1 이므로 trimming 필요
-    thresholds = thresholds  # shape = len(thresholds)
-
-    # precision > 0.9 조건 만족하는 최소 threshold
-    above_thresh = np.where(precision[:-1] >= 0.9)[0]  # 마지막 precision은 무시
-    if len(above_thresh) > 0:
-        min_thresh = thresholds[above_thresh[0]]
+# 1. 라벨별 threshold 계산 및 적용
+for i in range(n_labels):
+    precision, recall, thresholds = precision_recall_curve(b[:, i], a[:, i])
+    
+    # precision은 len(thresholds)+1 이므로 슬라이싱 필요
+    above_idx = np.where(precision[:-1] >= 0.9)[0]
+    
+    if len(above_idx) > 0:
+        t = thresholds[above_idx[0]]  # 최소 threshold
     else:
-        min_thresh = None  # precision이 0.9 넘는 지점 없음
-    thresholds_dict[label] = min_thresh
+        t = 0.5  # fallback (또는 None으로 두고 나중에 제외 가능)
+    
+    thresholds_dict[c[i]] = t
+    binary_preds[:, i] = (a[:, i] >= t).astype(int)
 
-# 보기 좋게 출력
-df_thresholds = pd.DataFrame({
-    'label': c,
-    'min_threshold_for_precision>0.9': [thresholds_dict[l] for l in c]
+# 2. classification_report 출력
+report = classification_report(b, binary_preds, target_names=c)
+print(report)
+
+# 3. threshold 정리 출력
+threshold_df = pd.DataFrame({
+    "label": c,
+    "threshold@precision>0.9": [thresholds_dict[label] for label in c]
 })
-print(df_thresholds)
+print(threshold_df)
