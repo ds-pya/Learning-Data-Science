@@ -1,52 +1,69 @@
-AppBar(
-  automaticallyImplyLeading: false, // 필요시 뒤로가기 버튼 제거
-  titleSpacing: 0,
-  title: Row(
-    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-    children: [
-      // 왼쪽 Title + padding
-      Padding(
-        padding: const EdgeInsets.only(left: 12.0),
-        child: Text(
-          'Title',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-      ),
+class DataCubit extends Cubit<DataState> {
+  // 1) 앱 시작·설정 변경 시 전체 RDB 로드 + 필터링
+  Future<void> init() async {
+    await _fetchFullRdb();          
+    _applyFilters();                
+    await _ensureScoresForDates(_requestedDates);
+  }
 
-      // 중앙 날짜 선택
-      Row(
-        children: [
-          IconButton(
-            icon: Icon(Icons.chevron_left),
-            onPressed: () {
-              // 하루 이전 날짜
-            },
-          ),
-          GestureDetector(
-            onTap: () {
-              // date picker 열기
-            },
-            child: Text(
-              '25.07.31',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-            ),
-          ),
-          IconButton(
-            icon: Icon(Icons.chevron_right),
-            onPressed: () {
-              // 하루 다음 날짜
-            },
-          ),
-        ],
-      ),
+  // 2) 날짜만 변경됐을 때
+  Future<void> updateDate(DateTime date) async {
+    emit(state.copyWith(date: date));
+    _applyFilters();
+    await _ensureScoresForDates([date]);
+  }
 
-      // 오른쪽 설정 버튼
-      IconButton(
-        icon: Icon(Icons.settings),
-        onPressed: () {
-          // 설정 동작
-        },
-      ),
-    ],
-  ),
-)
+  // 3) 소스 리스트만 변경됐을 때
+  Future<void> updateSources(List<String> sources) async {
+    emit(state.copyWith(sources: sources));
+    _applyFilters();
+    await _ensureScoresForDates([state.date]);
+  }
+
+  // 4) 과거 k일치 점수 한꺼번에 로드
+  Future<void> loadHistoricalScores(int k) async {
+    final dates = List.generate(k, (i) => state.date.subtract(Duration(days: i)));
+    await _ensureScoresForDates(dates);
+  }
+
+  // 5) 5분마다 오늘만 강제 리프레시
+  Future<void> refreshToday() async { … }
+  
+  // 6) 편의 getter
+  List<TableRow>   get currentRows   => state.filteredRdb;
+  Interscore?      get todayScore    => state.scoreMap[_keyFor(state.date)];
+  List<Interscore> get historyScores => 
+      state.requestedDates.map((d) => state.scoreMap[_keyFor(d)]!).toList();
+}
+
+class DataState extends Equatable {
+  final DateTime date;                 // settingsCubit 으로부터 전달
+  final List<String> sources;          // settingsCubit 으로부터 전달
+
+  final List<TableRow> fullRdb;        // init 한 번 로드
+  final List<TableRow> filteredRdb;    // date/sources 기준 필터링
+
+  final Map<ScoreKey, Interscore> scoreMap; 
+                                       // (date, sources) 키 → Interscore
+  final List<DateTime> requestedDates; // history 요청된 날짜 리스트
+
+  const DataState({
+    required this.date,
+    required this.sources,
+    this.fullRdb        = const [],
+    this.filteredRdb    = const [],
+    this.scoreMap       = const {},
+    this.requestedDates = const [],
+  });
+  …
+}
+
+class ScoreKey {
+  final DateTime date;
+  final List<String> sources;          // 항상 정렬된 상태로 보관
+
+  @override bool operator ==(o) => o is ScoreKey
+    && o.date.isAtSameMomentAs(date)
+    && listEquals(o.sources, sources);
+  @override int get hashCode => date.hashCode ^ sources.hashCode;
+}
