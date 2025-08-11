@@ -1,69 +1,19 @@
-class DataCubit extends Cubit<DataState> {
-  // 1) 앱 시작·설정 변경 시 전체 RDB 로드 + 필터링
-  Future<void> init() async {
-    await _fetchFullRdb();          
-    _applyFilters();                
-    await _ensureScoresForDates(_requestedDates);
-  }
+# 단일 노드 3GPU
+N_GPUS=3
 
-  // 2) 날짜만 변경됐을 때
-  Future<void> updateDate(DateTime date) async {
-    emit(state.copyWith(date: date));
-    _applyFilters();
-    await _ensureScoresForDates([date]);
-  }
-
-  // 3) 소스 리스트만 변경됐을 때
-  Future<void> updateSources(List<String> sources) async {
-    emit(state.copyWith(sources: sources));
-    _applyFilters();
-    await _ensureScoresForDates([state.date]);
-  }
-
-  // 4) 과거 k일치 점수 한꺼번에 로드
-  Future<void> loadHistoricalScores(int k) async {
-    final dates = List.generate(k, (i) => state.date.subtract(Duration(days: i)));
-    await _ensureScoresForDates(dates);
-  }
-
-  // 5) 5분마다 오늘만 강제 리프레시
-  Future<void> refreshToday() async { … }
-  
-  // 6) 편의 getter
-  List<TableRow>   get currentRows   => state.filteredRdb;
-  Interscore?      get todayScore    => state.scoreMap[_keyFor(state.date)];
-  List<Interscore> get historyScores => 
-      state.requestedDates.map((d) => state.scoreMap[_keyFor(d)]!).toList();
-}
-
-class DataState extends Equatable {
-  final DateTime date;                 // settingsCubit 으로부터 전달
-  final List<String> sources;          // settingsCubit 으로부터 전달
-
-  final List<TableRow> fullRdb;        // init 한 번 로드
-  final List<TableRow> filteredRdb;    // date/sources 기준 필터링
-
-  final Map<ScoreKey, Interscore> scoreMap; 
-                                       // (date, sources) 키 → Interscore
-  final List<DateTime> requestedDates; // history 요청된 날짜 리스트
-
-  const DataState({
-    required this.date,
-    required this.sources,
-    this.fullRdb        = const [],
-    this.filteredRdb    = const [],
-    this.scoreMap       = const {},
-    this.requestedDates = const [],
-  });
-  …
-}
-
-class ScoreKey {
-  final DateTime date;
-  final List<String> sources;          // 항상 정렬된 상태로 보관
-
-  @override bool operator ==(o) => o is ScoreKey
-    && o.date.isAtSameMomentAs(date)
-    && listEquals(o.sources, sources);
-  @override int get hashCode => date.hashCode ^ sources.hashCode;
-}
+torchrun --standalone --nnodes=1 --nproc_per_node=$N_GPUS train.py \
+  --model_name sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 \
+  --num_labels 15 \
+  --max_len 512 \
+  --bf16 true --tf32 high \
+  --lora_r 128 --lora_alpha 256 --lora_dropout 0.05 \
+  --mlp_hidden 384 --mlp_out 15 --mlp_dropout 0.10 \
+  --epochs 5 \
+  --bsz 96 \            # GPU당 96 → 글로벌 배치 288
+  --accum 1 \           # 메모리 여유 충분. OOM 시 bsz=64 or accum=2
+  --lr 3e-4 \
+  --warmup_ratio 0.06 \
+  --weight_decay 0.01 \
+  --clip_grad 1.0 \
+  --num_workers 8 \
+  --out_dir ./runs/minilm_lora128a256_crf_len512
