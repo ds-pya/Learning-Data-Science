@@ -1,68 +1,36 @@
-# 코드 실행 상태 초기화로 인해 필요한 함수 및 맵 재정의
-from typing import List, Tuple
-from collections import Counter
+import torch
 
-# BIO 인덱스 매핑
-label_map = {
-    0: 'O',
-    1: 'B-PER', 2: 'I-PER',
-    3: 'B-LOC', 4: 'I-LOC',
-    5: 'B-ORG', 6: 'I-ORG',
-    7: 'B-MISC', 8: 'I-MISC',
-    9: 'O'  # 예외 처리용
-}
+labels = ["O", "B-A", "I-A", "B-B", "I-B", "B-C", "I-C", "B-D", "I-D"]
+n_labels = len(labels)
 
-def decode_entities(labels: List[int]) -> List[Tuple[int, int, str]]:
-    entities = []
-    start = None
-    entity_type = None
-    for i, label in enumerate(labels):
-        tag = label_map[label]
-        if tag == 'O':
-            if start is not None:
-                entities.append((start, i - 1, entity_type))
-                start = None
-                entity_type = None
-        elif tag.startswith('B-'):
-            if start is not None:
-                entities.append((start, i - 1, entity_type))
-            start = i
-            entity_type = tag[2:]
-        elif tag.startswith('I-'):
-            if start is None or tag[2:] != entity_type:
-                continue
-        if tag.startswith('B-') or (tag.startswith('I-') and start is not None and entity_type is None):
-            entity_type = tag[2:]
-    if start is not None:
-        entities.append((start, len(labels) - 1, entity_type))
-    return entities
+# 초기 전환 비용 (0)
+transition = torch.zeros(n_labels, n_labels)
 
-def analyze_case_2_exist_only(
-    token_lists: List[List[str]],
-    true_labels: List[List[int]],
-    pred_labels: List[List[int]]
-):
-    true_only_counter = Counter()
-    pred_only_counter = Counter()
+def parse_tag(tag):
+    """태그 분리: (bio, type)"""
+    if tag == "O":
+        return "O", None
+    bio, ent_type = tag.split("-", 1)
+    return bio, ent_type
 
-    for tokens, t_labels, p_labels in zip(token_lists, true_labels, pred_labels):
-        true_spans = decode_entities(t_labels)
-        pred_spans = decode_entities(p_labels)
+# BIO 규칙 위반 → 100으로
+for i, from_tag in enumerate(labels):
+    from_bio, from_type = parse_tag(from_tag)
+    for j, to_tag in enumerate(labels):
+        to_bio, to_type = parse_tag(to_tag)
 
-        true_span_set = {(s, e, t) for s, e, t in true_spans}
-        pred_span_set = {(s, e, t) for s, e, t in pred_spans}
+        invalid = False
+        # 1. O → I-X 불가
+        if from_bio == "O" and to_bio == "I":
+            invalid = True
+        # 2. B-X → I-Y (X != Y) 불가
+        elif from_bio == "B" and to_bio == "I" and from_type != to_type:
+            invalid = True
+        # 3. I-X → I-Y (X != Y) 불가
+        elif from_bio == "I" and to_bio == "I" and from_type != to_type:
+            invalid = True
 
-        only_true = true_span_set - pred_span_set
-        only_pred = pred_span_set - true_span_set
+        if invalid:
+            transition[i, j] = 100
 
-        for _, _, t in only_true:
-            true_only_counter[t] += 1
-        for _, _, p in only_pred:
-            pred_only_counter[p] += 1
-
-    return {
-        "2a_true_only_total": sum(true_only_counter.values()),
-        "2b_pred_only_total": sum(pred_only_counter.values()),
-        "2a_true_only_by_type": true_only_counter,
-        "2b_pred_only_by_type": pred_only_counter
-    }
+print(transition)
