@@ -1,60 +1,99 @@
-target topic,entity type(level1),definition,제공 Data,keyword 예시
-"Entertainment (Game, Celebrity)",PS,"사용자 선호 셀럽/연예인 Keyword, 가상 캐릭터 Keyword",좋아하는 연예인·스트리머·캐릭터 정보,"아이유, 제임스 본드, 뽀로로"
-"Entertainment (Game, Celebrity)",AF,"사용자 선호 작품 Keyword, 관심 게임 Keyword",영화/음악/게임/TV 프로그램 정보,"폭싹 속았수다, 밤양갱, Snow White, 오버워치 2"
-"Entertainment (Game, Celebrity)",OG,방송사/제작사/소속사 Keyword,제작사·방송사 선호도,"CJ ENM, KBS, 하이브"
-"Entertainment (Game, Celebrity)",TM,IT·소프트웨어/하드웨어 Keyword,"시청환경, 기기 관심 정보","윈도우10, RTX 4090, 카카오톡"
-Sports,OG,응원 팀/구단 Keyword,"스포츠 팀, 구단 정보","두산 베어스, 맨체스터 유나이티드"
-Sports,PS,선호 선수/감독 Keyword,관심 선수/코치 정보,"손흥민, 메시, 페더러"
-Sports,EV,대회/경기 Keyword,스포츠 이벤트·리그 정보,"올림픽, 챔피언스리그, US 오픈"
-Sports,LC,경기장/도시 Keyword,경기 개최 도시/장소,"상암월드컵경기장, 뉴욕"
-Sports,CV,스포츠 종목/포지션/장비 Keyword,"선호 종목, 포지션, 용품","축구, 스트라이커, 야구공"
-Sports,TM,경기 규칙/기술 Keyword,스포츠 기술/규칙 이해도,"리바운드, 홈런, 바스켓카운트"
-Finance,OG,주식 종목(기업명) Keyword,기업명 기반 관심 종목,"삼성전자, Apple, Tesla"
-Finance,AF,"ETF/펀드 상품명 Keyword, 금융사 서비스 상품 Keyword","ETF, 금융상품 선호도","KODEX 200, ARKK Innovation ETF, 청년희망적금"
-Finance,CV,정책/세금/연금/펀드 Keyword,정책/세제/연금 관심,"국민연금, 소득공제, 퇴직연금"
-Finance,LC,부동산 지역 Keyword,지역 기반 부동산 관심,"강남, 송도, 맨해튼"
-Finance,TM,금융 IT/세부모델 Keyword,"금융 IT, 테마 투자 관심","블록체인, AI 반도체, 나스닥100"
-Finance,"CV (Currency)",화폐/가상화폐 Keyword,통화/코인 투자 성향,"비트코인, 이더리움, 달러"
-"Leisure (Travel, Camping, Fishing)",LC,여행지/캠핑지 Keyword,"여행지, 캠핑/낚시 장소","파리, 제주도, 한라산"
-"Leisure (Travel, Camping, Fishing)",EV,축제/행사 Keyword,"여행지 이벤트, 행사 정보","칸 영화제, 보령머드축제"
-"Leisure (Travel, Camping, Fishing)",AF,교통수단/장비 Keyword,"교통수단, 캠핑/낚시 장비","벤츠 캠핑카, 텐트, 낚싯대"
-"Leisure (Travel, Camping, Fishing)",CV,레저 종목/도구 Keyword,"활동 유형, 장비 선호","하이킹, 스키, 오리발"
-"Pets (Cats, Dogs, Other)",AM,반려동물 종 Keyword,"반려동물 종류, 품종","시바견, 페르시안 고양이, 앵무새"
-"Pets (Cats, Dogs, Other)",PS,반려동물 이름 Keyword,반려동물 개인화,"뽀삐, 쿠키, 탄이"
-"Pets (Cats, Dogs, Other)",TM,질병/약품 Keyword,반려동물 건강/의학 정보,"구충제, 피부병, 관절염"
-"Pets (Cats, Dogs, Other)",AF,용품/상품명 Keyword,"반려동물 용품, 사료 정보","고양이 모래, 강아지 하네스"
-Food,CV,음식/음료/식사 스타일 Keyword,선호 음식·음료 정보,"김치찌개, 와인, 양식"
-Food,AF,상품명 Keyword,가공식품/브랜드 상품 정보,"신라면, 펩시, 버거킹 와퍼"
-Food,LC,식당/브랜드 Keyword,선호 맛집·프랜차이즈,"백리향, 맥도날드, 스타벅스"
-Food,EV,푸드 관련 이벤트 Keyword,음식 축제·박람회,"와인 페스티벌, 커피 엑스포"
-Health/Wellness,CV,질병/증상/운동 Keyword,"건강 상태, 운동 습관","감기, 요가, 필라테스"
-Health/Wellness,AF,약품/운동기구 Keyword,"건강 보조제, 의료기기, 운동기구","타이레놀, 덤벨, 러닝머신"
-Health/Wellness,LC,병원/클리닉/운동센터 Keyword,이용 기관 정보,"서울대병원, 메디힐 클리닉, 피트니스 월드"
-Health/Wellness,PS,의사/트레이너 Keyword,선호 전문가,"김준호 원장, PT 강사 철수"
-Health/Wellness,EV,건강 관련 이벤트 Keyword,"건강검진, 박람회, 캠페인","국민 건강검진, 헬스케어 엑스포"
-Shopping,AF,상품명 Keyword,소비 상품/브랜드,"아이폰 15, 나이키 에어맥스"
-Shopping,OG,브랜드/유통사 Keyword,"브랜드, 쇼핑몰","쿠팡, 무신사, 이마트"
-Shopping,CV,제품군/카테고리 Keyword,"소비 성향, 제품 카테고리","가전제품, 화장품, 의류"
-Shopping,EV,쇼핑 관련 이벤트 Keyword,"세일, 프로모션","블랙프라이데이, 광군제"
-Technology,TM,기술/서비스 Keyword,"IT, 소프트웨어, 인터넷 서비스","ChatGPT, 메타버스, 5G"
-Technology,AF,기기/제품명 Keyword,"하드웨어, 디바이스","갤럭시 Z 폴드, 맥북 프로"
-Technology,OG,기업 Keyword,"IT 기업, 스타트업","구글, 네이버, 카카오"
-Technology,EV,기술 컨퍼런스/행사 Keyword,"세미나, 발표","CES, 구글 I/O"
-Education,OG,학교/기관 Keyword,"학교, 교육 기관","서울대, MIT, 하버드"
-Education,PS,교수/강사 Keyword,"선호 교육자","이순신 교수, Khan Academy"
-Education,AF,교재/강의 Keyword,"교재명, 강좌명","토익 1000제, 인공지능 강좌"
-Education,EV,교육 이벤트 Keyword,"설명회, 박람회","진로박람회, 유학 박람회"
-Politics/Society,PS,정치인 Keyword,"정치인 선호, 인식","윤석열, 조 바이든"
-Politics/Society,OG,정당/기관 Keyword,"정당, 기관","더불어민주당, UN"
-Politics/Society,LC,지역/국가 Keyword,"정치, 사회 이슈 지역","대한민국, 북한, 미국"
-Politics/Society,EV,정치/사회 이벤트 Keyword,"선거, 집회, 국제 회의","대선, COP28"
-Politics/Society,CV,사회 이슈 Keyword,"정책, 법안, 사회문제","기후변화, 최저임금, 저출산"
-Auto and Vehicles,AF,자동차/오토바이/교통수단 모델명 Keyword,"차량/교통수단 모델 정보","테슬라 모델3, 아반떼, 소나타, BMW X5, 혼다 CBR"
-Auto and Vehicles,OG,자동차 회사/제조사 Keyword,"자동차 브랜드 선호","현대자동차, 기아, 벤츠, 테슬라"
-Auto and Vehicles,CV,교통수단 유형/자동차 부품 Keyword,"교통수단 카테고리, 주요 부품 관심","SUV, 전기차, 자율주행, 배터리, 엔진"
-Auto and Vehicles,EV,자동차 관련 이벤트 Keyword,"모터쇼, 신차발표회, 레이싱 경기","서울 모터쇼, F1 그랑프리, 신차 발표회"
-Childcare,PS,아동 전문가/육아 인플루언서 Keyword,"선호 육아 전문가, 유튜버/블로거","오은영 박사, 하하 육아채널"
-Childcare,AF,육아용품/서비스 Keyword,"아기용품, 육아 서비스 정보","기저귀, 유모차, 카시트, 베이비시터 서비스"
-Childcare,CV,육아/아동 관련 개념 Keyword,"육아법, 발달 단계, 교육법","모유 수유, 아기 발달, 놀이학습"
-Childcare,EV,육아 관련 행사 Keyword,"육아 전시회, 박람회, 교육 세미나","베이비페어, 육아박람회"
-Childcare,LC,육아 장소 Keyword,"어린이집, 유치원, 놀이방","서울 유치원, 키즈카페"
+// build.gradle
+// implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:<latest>")
+//
+// ORT
+// implementation("com.microsoft.onnxruntime:onnxruntime-android:<latest>")
+
+import ai.onnxruntime.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
+
+object OnnxRunner {
+
+    // 1) Env는 프로세스 전역 싱글턴 (절대 close하지 말 것)
+    private val env: OrtEnvironment by lazy { OrtEnvironment.getEnvironment() }
+
+    // 2) 세션/뮤텍스 저장소
+    private val sessions = ConcurrentHashMap<String, OrtSession>()
+    private val mutexes  = ConcurrentHashMap<String, Mutex>()
+
+    private fun mutexOf(name: String): Mutex =
+        mutexes.computeIfAbsent(name) { Mutex() }
+
+    // 3) 세션 생성/획득 (동일 name의 동시 생성 방지)
+    suspend fun getOrCreateSession(
+        name: String,
+        modelBytes: ByteArray,
+        options: OrtSession.SessionOptions? = null
+    ): OrtSession {
+        sessions[name]?.let { return it }
+        val m = mutexOf(name)
+        return m.withLock {
+            sessions[name] ?: run {
+                val s = if (options == null) env.createSession(modelBytes)
+                        else env.createSession(modelBytes, options)
+                sessions[name] = s
+                s
+            }
+        }
+    }
+
+    // 4) 입력 텐서 유틸 (예시)
+    fun createTensor(data: FloatArray, shape: LongArray): OnnxTensor =
+        OnnxTensor.createTensor(env, data, shape)
+
+    // 필요하면 다른 타입(임베딩, int64 등) 생성 유틸도 추가
+
+    // 5) 안전 실행: 같은 name에 대해 run/close 상호배제
+    //  - inputs: 생성한 OnnxTensor들 (호출자가 만든 것)
+    //  - outputNames: 필요한 출력 이름들
+    suspend fun runSentenceCls(
+        name: String,
+        inputs: Map<String, OnnxTensor>,
+        outputNames: Set<String>
+    ): FloatArray? {
+        val m = mutexOf(name)
+        var result: OrtSession.Result? = null
+        try {
+            return m.withLock {
+                val session = sessions[name] ?: return@withLock null
+                result = session.run(inputs, outputNames)
+
+                // 예시: 첫 출력이 1xC float 로짓이라고 가정
+                val logits = (result!!.get(0)?.value as? Array<FloatArray>) ?: return@withLock null
+                logits[0].copyOf() // 복사본 반환 (Result 닫아도 안전)
+            }
+        } finally {
+            // Result/입력 텐서는 반드시 닫기
+            try { result?.close() } catch (_: Throwable) {}
+            inputs.values.forEach { v -> try { v.close() } catch (_: Throwable) {} }
+        }
+    }
+
+    // 6) 세션 하나 닫기 (run과 같은 Mutex로 보호)
+    suspend fun close(name: String) {
+        val m = mutexOf(name)
+        m.withLock {
+            sessions.remove(name)?.let { s ->
+                try { s.close() } catch (_: Throwable) {}
+            }
+            // 필요 시: mutexes.remove(name) // 재생성 대비해 보통은 남겨둠
+        }
+    }
+
+    // 7) 모두 닫기: 스냅샷 후 각 세션별 mutex로 순차 닫기
+    suspend fun closeAll() {
+        val names = sessions.keys.toList() // 스냅샷
+        for (name in names) {
+            val m = mutexOf(name)
+            m.withLock {
+                sessions.remove(name)?.let { s ->
+                    try { s.close() } catch (_: Throwable) {}
+                }
+            }
+        }
+        // 필요 시 전체 뮤텍스 정리:
+        // mutexes.clear()
+    }
+}
