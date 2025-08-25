@@ -1,99 +1,348 @@
-// build.gradle
-// implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:<latest>")
-//
-// ORT
-// implementation("com.microsoft.onnxruntime:onnxruntime-android:<latest>")
+import pandas as pd
+import numpy as np
+from collections import defaultdict
 
-import ai.onnxruntime.*
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import java.util.concurrent.ConcurrentHashMap
+# ====== 설정값 (필요시 조정) ======
+COUNT_SOURCES = {"ex","poi","cal","noti"}           # count 노출
+DUR_SOURCES   = {"app","you","web"}                 # duration(분)
+# 'ex'는 운동 전용 others 분배 금지
+OTHERS_ENABLED_SOURCES = {"app","poi","you","web","cal","noti"}
 
-object OnnxRunner {
-
-    // 1) Env는 프로세스 전역 싱글턴 (절대 close하지 말 것)
-    private val env: OrtEnvironment by lazy { OrtEnvironment.getEnvironment() }
-
-    // 2) 세션/뮤텍스 저장소
-    private val sessions = ConcurrentHashMap<String, OrtSession>()
-    private val mutexes  = ConcurrentHashMap<String, Mutex>()
-
-    private fun mutexOf(name: String): Mutex =
-        mutexes.computeIfAbsent(name) { Mutex() }
-
-    // 3) 세션 생성/획득 (동일 name의 동시 생성 방지)
-    suspend fun getOrCreateSession(
-        name: String,
-        modelBytes: ByteArray,
-        options: OrtSession.SessionOptions? = null
-    ): OrtSession {
-        sessions[name]?.let { return it }
-        val m = mutexOf(name)
-        return m.withLock {
-            sessions[name] ?: run {
-                val s = if (options == null) env.createSession(modelBytes)
-                        else env.createSession(modelBytes, options)
-                sessions[name] = s
-                s
-            }
-        }
-    }
-
-    // 4) 입력 텐서 유틸 (예시)
-    fun createTensor(data: FloatArray, shape: LongArray): OnnxTensor =
-        OnnxTensor.createTensor(env, data, shape)
-
-    // 필요하면 다른 타입(임베딩, int64 등) 생성 유틸도 추가
-
-    // 5) 안전 실행: 같은 name에 대해 run/close 상호배제
-    //  - inputs: 생성한 OnnxTensor들 (호출자가 만든 것)
-    //  - outputNames: 필요한 출력 이름들
-    suspend fun runSentenceCls(
-        name: String,
-        inputs: Map<String, OnnxTensor>,
-        outputNames: Set<String>
-    ): FloatArray? {
-        val m = mutexOf(name)
-        var result: OrtSession.Result? = null
-        try {
-            return m.withLock {
-                val session = sessions[name] ?: return@withLock null
-                result = session.run(inputs, outputNames)
-
-                // 예시: 첫 출력이 1xC float 로짓이라고 가정
-                val logits = (result!!.get(0)?.value as? Array<FloatArray>) ?: return@withLock null
-                logits[0].copyOf() // 복사본 반환 (Result 닫아도 안전)
-            }
-        } finally {
-            // Result/입력 텐서는 반드시 닫기
-            try { result?.close() } catch (_: Throwable) {}
-            inputs.values.forEach { v -> try { v.close() } catch (_: Throwable) {} }
-        }
-    }
-
-    // 6) 세션 하나 닫기 (run과 같은 Mutex로 보호)
-    suspend fun close(name: String) {
-        val m = mutexOf(name)
-        m.withLock {
-            sessions.remove(name)?.let { s ->
-                try { s.close() } catch (_: Throwable) {}
-            }
-            // 필요 시: mutexes.remove(name) // 재생성 대비해 보통은 남겨둠
-        }
-    }
-
-    // 7) 모두 닫기: 스냅샷 후 각 세션별 mutex로 순차 닫기
-    suspend fun closeAll() {
-        val names = sessions.keys.toList() // 스냅샷
-        for (name in names) {
-            val m = mutexOf(name)
-            m.withLock {
-                sessions.remove(name)?.let { s ->
-                    try { s.close() } catch (_: Throwable) {}
-                }
-            }
-        }
-        // 필요 시 전체 뮤텍스 정리:
-        // mutexes.clear()
-    }
+# 소스별 커버 토픽 맵(당신이 준 것 반영; 필요시 확장)
+SOURCE_TOPIC_COVER = {
+    "movie":              ["app","cal","noti"],
+    "beauty":             ["app","cal","noti"],
+    "game":               ["app","you","web"],
+    "celebrity":          ["app","you","web"],
+    "stock":              ["app","you","web"],
+    "real estate":        ["app","you","web"],
+    "politics":           ["app","you","web"],
+    "food":               ["app","you","web"],
+    "auto and vehicles":  ["app","you","web"],
+    "baseball":           ["app","ex","you","web","cal","noti"],
+    "basketball":         ["app","ex","you","web","cal","noti"],
+    "soccer":             ["app","ex","you","web","cal","noti"],
+    "golf":               ["app","ex","poi","you","web","cal","noti"],
+    "running":            ["app","ex","you","web","cal"],
+    "cricket":            ["app","ex","you","web","cal"],
+    "cycle":              ["ex","you","web","cal"],
+    "volleyball":         ["ex","you","web","cal"],
+    "tennis":             ["ex","you","web","cal"],
+    "dogs":               ["you","web"],
+    "cats":               ["you","web"],
+    "travel":             ["app","poi","you","web","cal","noti"],
+    "camping":            ["app","poi","you","web","cal"],
+    "fishing":            ["you","web","cal"],
+    "childcare":          ["you","web","cal"],
+    "shopping":           ["app","poi"],
+    "health and wellness":["app","ex"],
+    "others":             list(OTHERS_ENABLED_SOURCES)  # others는 소스별 분배 계산에만 씀
 }
+
+# 소스 가중치(초기값): 합 1 권장
+SOURCE_WEIGHT = {
+    "app":0.20, "you":0.20, "web":0.20, "ex":0.15, "poi":0.10, "cal":0.10, "noti":0.05
+}
+
+# 퍼센타일 계산용: 윈저라이징 범위(글로벌 분포)
+WINSOR_LOW, WINSOR_HIGH = 0.01, 0.99
+
+# 집계/분포 기간 기본값
+DEFAULT_CURRENT_LOOKBACK_DAYS = 28    # 현재 점수 산출에 쓰는 row 기간
+DEFAULT_GLOBAL_LOOKBACK_DAYS  = 90    # 글로벌 분포 학습에 쓰는 기간
+WEEK_TREND_WEEKS = 4                  # 4주 트렌드(현재 주 포함)
+
+# 시간 감쇠(선택): 집계 시 같은 주 내에서도 최근일수록 더 큰 가중을 주고 싶다면 사용
+TIME_DECAY_LAMBDA_PER_DAY = 0.0       # 0=비활성. 예: 0.05면 하루 지날 때마다 e^-0.05 배
+
+
+# ====== 유틸 ======
+def ensure_dt(df):
+    if not np.issubdtype(df["datetime"].dtype, np.datetime64):
+        df = df.copy()
+        df["datetime"] = pd.to_datetime(df["datetime"])
+    return df
+
+def winsorize_series(s, low=WINSOR_LOW, high=WINSOR_HIGH):
+    if len(s) == 0:
+        return s
+    ql, qh = s.quantile([low, high])
+    return s.clip(lower=ql, upper=qh)
+
+def ecdf_percentile(value, sample_series):
+    """sample_series의 경험적 CDF로 value의 분위수(0~1) 계산"""
+    if len(sample_series) == 0:
+        return 0.5
+    # 정렬 후 이진 탐색
+    arr = np.sort(sample_series.to_numpy())
+    idx = np.searchsorted(arr, value, side="right")
+    return idx / len(arr)
+
+def lognorm_cdf_approx(value, sample_series):
+    """로그-정규 근사 CDF (fallback). sample에서 log1p로 모수 추정."""
+    if len(sample_series) < 10:
+        return 0.5
+    x = np.log1p(sample_series.clip(lower=0))
+    mu, sigma = x.mean(), x.std() + 1e-8
+    z = (np.log1p(max(value,0)) - mu) / sigma
+    # 표준정규 CDF 근사
+    return 0.5 * (1 + np.math.erf(z / np.sqrt(2)))
+
+def to_percentile(value, sample_series):
+    """안정성을 위해 ECDF 우선, 샘플 수 적거나 꼬리 과도하면 lognorm 보정 혼합"""
+    if len(sample_series) >= 50:
+        s_win = winsorize_series(sample_series)
+        p_ecdf = ecdf_percentile(value, s_win)
+        return float(p_ecdf)
+    else:
+        # 소표본이면 혼합
+        p1 = ecdf_percentile(value, sample_series)
+        p2 = lognorm_cdf_approx(value, sample_series)
+        return float(0.5*p1 + 0.5*p2)
+
+def source_covers_topic(source, topic):
+    if topic not in SOURCE_TOPIC_COVER:
+        return False
+    return source in SOURCE_TOPIC_COVER[topic]
+
+def week_key(ts):  # ISO 주차 키
+    iso = ts.isocalendar()
+    return f"{iso.year}-W{int(iso.week):02d}"
+
+def apply_time_decay(df):
+    if TIME_DECAY_LAMBDA_PER_DAY <= 0:
+        df["decay_w"] = 1.0
+        return df
+    now = df["datetime"].max()
+    days = (now - df["datetime"]).dt.total_seconds() / (3600*24)
+    df = df.copy()
+    df["decay_w"] = np.exp(-TIME_DECAY_LAMBDA_PER_DAY * days)
+    return df
+
+def aggregate_period(df):
+    """
+    2단계: period(주 단위)로 source-topic별 exposure 합(옵션: decay 가중)
+    """
+    df = df.copy()
+    df["week"] = df["datetime"].apply(week_key)
+    df = apply_time_decay(df)
+    # count/duration 혼용 그대로 합산 (df.exposure는 이미 분 단위 혹은 count 의미)
+    agg = (df
+           .groupby(["week","source","topic"], as_index=False)
+           .apply(lambda g: pd.Series({
+               "exposure_sum": np.sum(g["exposure"] * g["decay_w"])
+           }))
+           .reset_index(drop=True))
+    return agg
+
+def build_global_samples(df, global_days=DEFAULT_GLOBAL_LOOKBACK_DAYS):
+    """
+    3단계 대비: 글로벌 분포 샘플(ECDF용) 구축
+    - 우선 (source, topic) 단위 샘플을 만들고, 없으면 source 단위로 fall back
+    """
+    if global_days > 0:
+        cutoff = df["datetime"].max() - pd.Timedelta(days=global_days)
+        base = df[df["datetime"] >= cutoff].copy()
+    else:
+        base = df.copy()
+
+    # 주 단위로 exposure 합치고 샘플로 사용
+    agg = aggregate_period(base)
+
+    samples_by_st = defaultdict(pd.Series)   # (source, topic) → Series
+    samples_by_s  = defaultdict(pd.Series)   # source → Series
+
+    for (s, t), g in agg.groupby(["source","topic"]):
+        samples_by_st[(s,t)] = g["exposure_sum"]
+    for s, g in agg.groupby(["source"]):
+        samples_by_s[s] = g["exposure_sum"]
+
+    return samples_by_st, samples_by_s
+
+def redistribute_others(agg):
+    """
+    4단계: others 노출을 소스의 커버 토픽에 분배.
+    - ex 소스는 others를 분배하지 않음(운동 전용)
+    - 분배 비율: 해당 소스에서 'others 제외 실제 관측된 토픽 비율' (없으면 균등)
+    - 캘린더 등 원래 잘 안나오는 토픽엔 커버셋 밖이라 분배되지 않음 → 자연스럽게 보호
+    """
+    if agg.empty:
+        return agg
+
+    agg = agg.copy()
+
+    # 소스-주차 단위에서 others 행 구분
+    mask_others = (agg["topic"] == "others")
+    others_df = agg[mask_others]
+    main_df   = agg[~mask_others]
+
+    if others_df.empty:
+        return agg
+
+    # 소스-주차별 'others 제외 총합 대비 각 토픽 비율' 계산(커버셋 내에서만)
+    def _priors_for_source_week(g_main, source, week):
+        # 해당 소스가 커버하는 토픽만
+        g_main = g_main[g_main["source"] == source]
+        g_main = g_main[g_main["week"] == week]
+        if g_main.empty:
+            return None
+        total = g_main["exposure_sum"].sum()
+        if total <= 0:
+            return None
+        # others 제외 상태임
+        pri = (g_main
+               .groupby("topic", as_index=False)["exposure_sum"]
+               .sum())
+        pri["ratio"] = pri["exposure_sum"] / pri["exposure_sum"].sum()
+        return dict(zip(pri["topic"], pri["ratio"]))
+
+    allocations = []  # (week, source, topic, alloc_value)
+
+    for _, row in others_df.iterrows():
+        week, source, others_val = row["week"], row["source"], row["exposure_sum"]
+
+        # 운동 전용 ex는 others 분배 안함
+        if source == "ex":
+            continue
+
+        # 소스가 커버하는 토픽 집합
+        topics_cover = [t for t, srcs in SOURCE_TOPIC_COVER.items()
+                        if t != "others" and source in srcs]
+        if not topics_cover:
+            continue
+
+        # 관측 기반 prior
+        pri = _priors_for_source_week(main_df, source, week)
+        if pri is None:
+            # 균등 분배(커버셋 내)
+            n = len(topics_cover)
+            share = others_val / n
+            for t in topics_cover:
+                allocations.append((week, source, t, share))
+        else:
+            # 관측된 토픽만 비율 존재 → 커버셋 & 관측셋 교집합에만 분배
+            total_ratio = 0.0
+            for t in topics_cover:
+                total_ratio += pri.get(t, 0.0)
+            if total_ratio == 0:
+                # 관측 비율이 전무하면 균등
+                n = len(topics_cover)
+                share = others_val / n
+                for t in topics_cover:
+                    allocations.append((week, source, t, share))
+            else:
+                for t in topics_cover:
+                    r = pri.get(t, 0.0) / total_ratio
+                    allocations.append((week, source, t, others_val * r))
+
+    if allocations:
+        add_df = pd.DataFrame(allocations, columns=["week","source","topic","exposure_sum"])
+        # main_df에 합산
+        merged = (pd.concat([main_df, add_df], ignore_index=True)
+                    .groupby(["week","source","topic"], as_index=False)["exposure_sum"]
+                    .sum())
+        return merged
+    else:
+        return main_df
+
+def to_percentiles_by_source_topic(agg, samples_by_st, samples_by_s):
+    """
+    5단계 전반: (source,topic) 합계 → 글로벌 분포 기반 퍼센타일
+    - (s,t) 샘플이 있으면 사용, 없으면 s 샘플로 fall back
+    """
+    rows = []
+    for _, r in agg.iterrows():
+        s, t, x = r["source"], r["topic"], r["exposure_sum"]
+        samp = samples_by_st.get((s,t))
+        if samp is None or len(samp) == 0:
+            samp = samples_by_s.get(s, pd.Series(dtype=float))
+        p = to_percentile(x, samp) if samp is not None else 0.5
+        rows.append((r["week"], s, t, float(p)))
+    return pd.DataFrame(rows, columns=["week","source","topic","percentile"])
+
+def combine_sources_to_topic_scores(pct_df):
+    """
+    5단계 후반: 소스별 퍼센타일을 토픽 점수로 집계 (가중 평균)
+    """
+    if pct_df.empty:
+        return pd.DataFrame(columns=["week","topic","score"])
+    tmp = pct_df.copy()
+    tmp["weight"] = tmp["source"].map(SOURCE_WEIGHT).fillna(0.0)
+    tmp["num"] = tmp["percentile"] * tmp["weight"]
+    out = (tmp.groupby(["week","topic"], as_index=False)
+              .agg(score=("num","sum"), den=("weight","sum")))
+    out["score"] = np.where(out["den"]>0, out["score"]/out["den"], 0.5)
+    out["score"] = (out["score"]*100).round(1)  # 0~100 스케일
+    return out[["week","topic","score"]]
+
+def interest_pipeline(
+    df: pd.DataFrame,
+    current_lookback_days: int = DEFAULT_CURRENT_LOOKBACK_DAYS,
+    global_lookback_days: int  = DEFAULT_GLOBAL_LOOKBACK_DAYS,
+    trend_weeks: int = WEEK_TREND_WEEKS
+):
+    """
+    입력 df(datetime, source, topic, exposure)에 대해 1~5단계 수행.
+    반환:
+      - current_scores: 현재 주 topic → score
+      - current_ranked : (topic, score) 정렬 리스트
+      - weekly_trend  : 최근 trend_weeks개 주의 토픽별 점수(피벗)
+      - details       : 중간 산출물(디버그용)
+    """
+    assert {"datetime","source","topic","exposure"}.issubset(df.columns)
+
+    df = ensure_dt(df).copy()
+    df = df.sort_values("datetime")
+
+    # 1) 최근 90일(기본)로 글로벌 분포 샘플 구성
+    samples_by_st, samples_by_s = build_global_samples(df, global_lookback_days)
+
+    # 2) 현재 점수 산출에 사용할 행: 최근 28일(기본)
+    cutoff = df["datetime"].max() - pd.Timedelta(days=current_lookback_days)
+    df_cur = df[df["datetime"] >= cutoff].copy()
+
+    # 2) 주 단위 집계(+옵션: decay)
+    agg = aggregate_period(df_cur)          # week, source, topic, exposure_sum
+
+    # 4) others 분배 (ex는 others 없음)
+    agg2 = redistribute_others(agg)         # others 제거되고 커버 토픽으로 분산
+
+    # 3 & 5) 글로벌 분포 기반 퍼센타일 변환 → 소스 가중 평균으로 토픽 점수
+    pct_df = to_percentiles_by_source_topic(agg2, samples_by_st, samples_by_s)
+    week_topic_scores = combine_sources_to_topic_scores(pct_df)  # week-topic-score
+
+    if week_topic_scores.empty:
+        return {
+            "current_scores": {},
+            "current_ranked": [],
+            "weekly_trend": pd.DataFrame(),
+            "details": {
+                "agg": agg, "agg_after_others": agg2, "pct": pct_df
+            }
+        }
+
+    # 최근 4주(기본) 트렌드 피벗
+    all_weeks_sorted = sorted(week_topic_scores["week"].unique())
+    recent_weeks = all_weeks_sorted[-trend_weeks:]
+    trend = (week_topic_scores[week_topic_scores["week"].isin(recent_weeks)]
+                .pivot(index="topic", columns="week", values="score")
+                .fillna(0.0)
+             )
+
+    # 현재 주 = 가장 최근 주
+    current_week = recent_weeks[-1]
+    cur = week_topic_scores[week_topic_scores["week"]==current_week][["topic","score"]]
+    current_scores = dict(zip(cur["topic"], cur["score"]))
+    current_ranked = sorted(current_scores.items(), key=lambda x: x[1], reverse=True)
+
+    return {
+        "current_scores": current_scores,     # dict[topic] -> score(0~100)
+        "current_ranked": current_ranked,     # [(topic, score desc)]
+        "weekly_trend": trend,                # pd.DataFrame: rows=topic, cols=week
+        "details": {
+            "agg": agg,                       # before others
+            "agg_after_others": agg2,         # after others redistribution
+            "pct": pct_df,                    # source-topic percentiles
+            "week_topic_scores": week_topic_scores
+        }
+    }
