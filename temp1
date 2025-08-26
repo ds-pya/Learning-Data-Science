@@ -1,380 +1,574 @@
-import pandas as pd
-import numpy as np
-from collections import defaultdict
+첫 50개입니다.
 
-# ====== 설정값 (필요시 조정) ======
-COUNT_SOURCES = {"ex","poi","cal","noti"}           # count 노출
-DUR_SOURCES   = {"app","you","web"}                 # duration(분)
-# 'ex'는 운동 전용 others 분배 금지
-OTHERS_ENABLED_SOURCES = {"app","poi","you","web","cal","noti"}
-
-# 소스별 커버 토픽 맵(당신이 준 것 반영; 필요시 확장)
-SOURCE_TOPIC_COVER = {
-    "movie":              ["app","cal","noti"],
-    "beauty":             ["app","cal","noti"],
-    "game":               ["app","you","web"],
-    "celebrity":          ["app","you","web"],
-    "stock":              ["app","you","web"],
-    "real estate":        ["app","you","web"],
-    "politics":           ["app","you","web"],
-    "food":               ["app","you","web"],
-    "auto and vehicles":  ["app","you","web"],
-    "baseball":           ["app","ex","you","web","cal","noti"],
-    "basketball":         ["app","ex","you","web","cal","noti"],
-    "soccer":             ["app","ex","you","web","cal","noti"],
-    "golf":               ["app","ex","poi","you","web","cal","noti"],
-    "running":            ["app","ex","you","web","cal"],
-    "cricket":            ["app","ex","you","web","cal"],
-    "cycle":              ["ex","you","web","cal"],
-    "volleyball":         ["ex","you","web","cal"],
-    "tennis":             ["ex","you","web","cal"],
-    "dogs":               ["you","web"],
-    "cats":               ["you","web"],
-    "travel":             ["app","poi","you","web","cal","noti"],
-    "camping":            ["app","poi","you","web","cal"],
-    "fishing":            ["you","web","cal"],
-    "childcare":          ["you","web","cal"],
-    "shopping":           ["app","poi"],
-    "health and wellness":["app","ex"],
-    "others":             list(OTHERS_ENABLED_SOURCES)  # others는 소스별 분배 계산에만 씀
-}
-
-# 소스 가중치(초기값): 합 1 권장
-SOURCE_WEIGHT = {
-    "app":0.20, "you":0.20, "web":0.20, "ex":0.15, "poi":0.10, "cal":0.10, "noti":0.05
-}
-
-# 퍼센타일 계산용: 윈저라이징 범위(글로벌 분포)
-WINSOR_LOW, WINSOR_HIGH = 0.01, 0.99
-
-# 집계/분포 기간 기본값
-DEFAULT_CURRENT_LOOKBACK_DAYS = 28    # 현재 점수 산출에 쓰는 row 기간
-DEFAULT_GLOBAL_LOOKBACK_DAYS  = 90    # 글로벌 분포 학습에 쓰는 기간
-WEEK_TREND_WEEKS = 4                  # 4주 트렌드(현재 주 포함)
-
-# 시간 감쇠(선택): 집계 시 같은 주 내에서도 최근일수록 더 큰 가중을 주고 싶다면 사용
-TIME_DECAY_LAMBDA_PER_DAY = 0.0       # 0=비활성. 예: 0.05면 하루 지날 때마다 e^-0.05 배
+1. Google
 
 
-# ====== 유틸 ======
-def ensure_dt(df):
-    if not np.issubdtype(df["datetime"].dtype, np.datetime64):
-        df = df.copy()
-        df["datetime"] = pd.to_datetime(df["datetime"])
-    return df
+2. https://www.google.com/search?q=%EC%BF%B5%ED%91%B8%ED%8C%AC%E...uAemBMIHBTAuMy4zyAcT&sclient=gws-wiz&sei=xFqsaNDxBs-Ovr0P4OHKgQk
 
-def winsorize_series(s, low=WINSOR_LOW, high=WINSOR_HIGH):
-    if len(s) == 0:
-        return s
-    ql, qh = s.quantile([low, high])
-    return s.clip(lower=ql, upper=qh)
 
-def ecdf_percentile(value, sample_series):
-    """sample_series의 경험적 CDF로 value의 분위수(0~1) 계산"""
-    if len(sample_series) == 0:
-        return 0.5
-    # 정렬 후 이진 탐색
-    arr = np.sort(sample_series.to_numpy())
-    idx = np.searchsorted(arr, value, side="right")
-    return idx / len(arr)
+3. 쿵푸팬더 - Google 검색
 
-def lognorm_cdf_approx(value, sample_series):
-    """로그-정규 근사 CDF (fallback). sample에서 log1p로 모수 추정."""
-    if len(sample_series) < 10:
-        return 0.5
-    x = np.log1p(sample_series.clip(lower=0))
-    mu, sigma = x.mean(), x.std() + 1e-8
-    z = (np.log1p(max(value,0)) - mu) / sigma
-    # 표준정규 CDF 근사
-    return 0.5 * (1 + np.math.erf(z / np.sqrt(2)))
 
-def to_percentile(value, sample_series):
-    """안정성을 위해 ECDF 우선, 샘플 수 적거나 꼬리 과도하면 lognorm 보정 혼합"""
-    if len(sample_series) >= 50:
-        s_win = winsorize_series(sample_series)
-        p_ecdf = ecdf_percentile(value, s_win)
-        return float(p_ecdf)
-    else:
-        # 소표본이면 혼합
-        p1 = ecdf_percentile(value, sample_series)
-        p2 = lognorm_cdf_approx(value, sample_series)
-        return float(0.5*p1 + 0.5*p2)
+4. 포켓몬스터 - Google 검색
 
-def source_covers_topic(source, topic):
-    if topic not in SOURCE_TOPIC_COVER:
-        return False
-    return source in SOURCE_TOPIC_COVER[topic]
 
-def week_key(ts):  # ISO 주차 키
-    iso = ts.isocalendar()
-    return f"{iso.year}-W{int(iso.week):02d}"
+5. Hubabubo,quả việt quất,món khai vị và bánh ngọt ngon. #đồ ngọt #thức ăn - YouTube
 
-def apply_time_decay(df):
-    if TIME_DECAY_LAMBDA_PER_DAY <= 0:
-        df["decay_w"] = 1.0
-        return df
-    now = df["datetime"].max()
-    days = (now - df["datetime"]).dt.total_seconds() / (3600*24)
-    df = df.copy()
-    df["decay_w"] = np.exp(-TIME_DECAY_LAMBDA_PER_DAY * days)
-    return df
 
-def aggregate_period(df):
-    """
-    2단계: period(주 단위)로 source-topic별 exposure 합(옵션: decay 가중)
-    """
-    df = df.copy()
-    df["week"] = df["datetime"].apply(week_key)
-    df = apply_time_decay(df)
-    # count/duration 혼용 그대로 합산 (df.exposure는 이미 분 단위 혹은 count 의미)
-    agg = (df
-           .groupby(["week","source","topic"], as_index=False)
-           .apply(lambda g: pd.Series({
-               "exposure_sum": np.sum(g["exposure"] * g["decay_w"])
-           }))
-           .reset_index(drop=True))
-    return agg
+6. '캡틴 손흥민' 교체 가능성 부상…카스트로프 첫 발탁 / 연합뉴스TV (YonhapnewsTV) - YouTube
 
-def build_global_samples(df, global_days=DEFAULT_GLOBAL_LOOKBACK_DAYS):
-    """
-    3단계 대비: 글로벌 분포 샘플(ECDF용) 구축
-    - 우선 (source, topic) 단위 샘플을 만들고, 없으면 source 단위로 fall back
-    """
-    if global_days > 0:
-        cutoff = df["datetime"].max() - pd.Timedelta(days=global_days)
-        base = df[df["datetime"] >= cutoff].copy()
-    else:
-        base = df.copy()
 
-    # 주 단위로 exposure 합치고 샘플로 사용
-    agg = aggregate_period(base)
+7. 쇼핑 - YouTube
 
-    samples_by_st = defaultdict(pd.Series)   # (source, topic) → Series
-    samples_by_s  = defaultdict(pd.Series)   # source → Series
 
-    for (s, t), g in agg.groupby(["source","topic"]):
-        samples_by_st[(s,t)] = g["exposure_sum"]
-    for s, g in agg.groupby(["source"]):
-        samples_by_s[s] = g["exposure_sum"]
+8. 2025년 8월 24일 여의도순복음교회 이영훈 담임목사 주일예배설교 / 말씀으로 승리하는 삶 - YouTube
 
-    return samples_by_st, samples_by_s
 
-def redistribute_others(agg):
-    """
-    4단계: others 노출을 소스의 커버 토픽에 분배.
-    - ex 소스는 others를 분배하지 않음(운동 전용)
-    - 분배 비율: 해당 소스에서 'others 제외 실제 관측된 토픽 비율' (없으면 균등)
-    - 캘린더 등 원래 잘 안나오는 토픽엔 커버셋 밖이라 분배되지 않음 → 자연스럽게 보호
-    """
-    if agg.empty:
-        return agg
+9. 팟캐스트 - YouTube
 
-    agg = agg.copy()
 
-    # 소스-주차 단위에서 others 행 구분
-    mask_others = (agg["topic"] == "others")
-    others_df = agg[mask_others]
-    main_df   = agg[~mask_others]
+10. Music Premium - YouTube
 
-    if others_df.empty:
-        return agg
 
-    # 소스-주차별 'others 제외 총합 대비 각 토픽 비율' 계산(커버셋 내에서만)
-    def _priors_for_source_week(g_main, source, week):
-        # 해당 소스가 커버하는 토픽만
-        g_main = g_main[g_main["source"] == source]
-        g_main = g_main[g_main["week"] == week]
-        if g_main.empty:
-            return None
-        total = g_main["exposure_sum"].sum()
-        if total <= 0:
-            return None
-        # others 제외 상태임
-        pri = (g_main
-               .groupby("topic", as_index=False)["exposure_sum"]
-               .sum())
-        pri["ratio"] = pri["exposure_sum"] / pri["exposure_sum"].sum()
-        return dict(zip(pri["topic"], pri["ratio"]))
+11. YouTube
 
-    allocations = []  # (week, source, topic, alloc_value)
 
-    for _, row in others_df.iterrows():
-        week, source, others_val = row["week"], row["source"], row["exposure_sum"]
+12. Wikipedia, the free encyclopedia
 
-        # 운동 전용 ex는 others 분배 안함
-        if source == "ex":
-            continue
 
-        # 소스가 커버하는 토픽 집합
-        topics_cover = [t for t, srcs in SOURCE_TOPIC_COVER.items()
-                        if t != "others" and source in srcs]
-        if not topics_cover:
-            continue
+13. 2025 Herat road crash - Wikipedia
 
-        # 관측 기반 prior
-        pri = _priors_for_source_week(main_df, source, week)
-        if pri is None:
-            # 균등 분배(커버셋 내)
-            n = len(topics_cover)
-            share = others_val / n
-            for t in topics_cover:
-                allocations.append((week, source, t, share))
-        else:
-            # 관측된 토픽만 비율 존재 → 커버셋 & 관측셋 교집합에만 분배
-            total_ratio = 0.0
-            for t in topics_cover:
-                total_ratio += pri.get(t, 0.0)
-            if total_ratio == 0:
-                # 관측 비율이 전무하면 균등
-                n = len(topics_cover)
-                share = others_val / n
-                for t in topics_cover:
-                    allocations.append((week, source, t, share))
-            else:
-                for t in topics_cover:
-                    r = pri.get(t, 0.0) / total_ratio
-                    allocations.append((week, source, t, others_val * r))
 
-    if allocations:
-        add_df = pd.DataFrame(allocations, columns=["week","source","topic","exposure_sum"])
-        # main_df에 합산
-        merged = (pd.concat([main_df, add_df], ignore_index=True)
-                    .groupby(["week","source","topic"], as_index=False)["exposure_sum"]
-                    .sum())
-        return merged
-    else:
-        return main_df
+14. Helmand Province - Wikipedia
 
-def to_percentiles_by_source_topic(agg, samples_by_st, samples_by_s):
-    """
-    5단계 전반: (source,topic) 합계 → 글로벌 분포 기반 퍼센타일
-    - (s,t) 샘플이 있으면 사용, 없으면 s 샘플로 fall back
-    """
-    rows = []
-    for _, r in agg.iterrows():
-        s, t, x = r["source"], r["topic"], r["exposure_sum"]
-        samp = samples_by_st.get((s,t))
-        if samp is None or len(samp) == 0:
-            samp = samples_by_s.get(s, pd.Series(dtype=float))
-        p = to_percentile(x, samp) if samp is not None else 0.5
-        rows.append((r["week"], s, t, float(p)))
-    return pd.DataFrame(rows, columns=["week","source","topic","percentile"])
 
-def combine_sources_to_topic_scores(pct_df):
-    """
-    5단계 후반: 소스별 퍼센타일을 토픽 점수로 집계 (가중 평균)
-    """
-    if pct_df.empty:
-        return pd.DataFrame(columns=["week","topic","score"])
-    tmp = pct_df.copy()
-    tmp["weight"] = tmp["source"].map(SOURCE_WEIGHT).fillna(0.0)
-    tmp["num"] = tmp["percentile"] * tmp["weight"]
-    out = (tmp.groupby(["week","topic"], as_index=False)
-              .agg(score=("num","sum"), den=("weight","sum")))
-    out["score"] = np.where(out["den"]>0, out["score"]/out["den"], 0.5)
-    out["score"] = (out["score"]*100).round(1)  # 0~100 스케일
-    return out[["week","topic","score"]]
+15. Pashtuns - Wikipedia
 
-def interest_pipeline(
-    df: pd.DataFrame,
-    current_lookback_days: int = DEFAULT_CURRENT_LOOKBACK_DAYS,
-    global_lookback_days: int  = DEFAULT_GLOBAL_LOOKBACK_DAYS,
-    trend_weeks: int = WEEK_TREND_WEEKS
-):
-    """
-    입력 df(datetime, source, topic, exposure)에 대해 1~5단계 수행.
-    반환:
-      - current_scores: 현재 주 topic → score
-      - current_ranked : (topic, score) 정렬 리스트
-      - weekly_trend  : 최근 trend_weeks개 주의 토픽별 점수(피벗)
-      - details       : 중간 산출물(디버그용)
-    """
-    assert {"datetime","source","topic","exposure"}.issubset(df.columns)
 
-    df = ensure_dt(df).copy()
-    df = df.sort_values("datetime")
+16. GitHub · Build and ship software on a single, collaborative platform · GitHub
 
-    # 1) 최근 90일(기본)로 글로벌 분포 샘플 구성
-    samples_by_st, samples_by_s = build_global_samples(df, global_lookback_days)
 
-    # 2) 현재 점수 산출에 사용할 행: 최근 28일(기본)
-    cutoff = df["datetime"].max() - pd.Timedelta(days=current_lookback_days)
-    df_cur = df[df["datetime"] >= cutoff].copy()
+17. Topics on GitHub · GitHub
 
-    # 2) 주 단위 집계(+옵션: decay)
-    agg = aggregate_period(df_cur)          # week, source, topic, exposure_sum
 
-    # 4) others 분배 (ex는 others 없음)
-    agg2 = redistribute_others(agg)         # others 제거되고 커버 토픽으로 분산
+18. GitHub - donnemartin/system-design-primer: Learn how to design large-scale systems...
 
-    # 3 & 5) 글로벌 분포 기반 퍼센타일 변환 → 소스 가중 평균으로 토픽 점수
-    pct_df = to_percentiles_by_source_topic(agg2, samples_by_st, samples_by_s)
-    week_topic_scores = combine_sources_to_topic_scores(pct_df)  # week-topic-score
 
-    if week_topic_scores.empty:
-        return {
-            "current_scores": {},
-            "current_ranked": [],
-            "weekly_trend": pd.DataFrame(),
-            "details": {
-                "agg": agg, "agg_after_others": agg2, "pct": pct_df
-            }
-        }
+19. python · GitHub Topics · GitHub
 
-    # 최근 4주(기본) 트렌드 피벗
-    all_weeks_sorted = sorted(week_topic_scores["week"].unique())
-    recent_weeks = all_weeks_sorted[-trend_weeks:]
-    trend = (week_topic_scores[week_topic_scores["week"].isin(recent_weeks)]
-                .pivot(index="topic", columns="week", values="score")
-                .fillna(0.0)
-             )
 
-    # 현재 주 = 가장 최근 주
-    current_week = recent_weeks[-1]
-    cur = week_topic_scores[week_topic_scores["week"]==current_week][["topic","score"]]
-    current_scores = dict(zip(cur["topic"], cur["score"]))
-    current_ranked = sorted(current_scores.items(), key=lambda x: x[1], reverse=True)
+20. GitHub - vinta/awesome-python: An opinionated list of awesome Python frameworks...
 
-    return {
-        "current_scores": current_scores,     # dict[topic] -> score(0~100)
-        "current_ranked": current_ranked,     # [(topic, score desc)]
-        "weekly_trend": trend,                # pd.DataFrame: rows=topic, cols=week
-        "details": {
-            "agg": agg,                       # before others
-            "agg_after_others": agg2,         # after others redistribution
-            "pct": pct_df,                    # source-topic percentiles
-            "week_topic_scores": week_topic_scores
-        }
-    }
 
-import matplotlib.pyplot as plt
-import numpy as np
+21. google_maps_flutter 2.12.3 causing map freezes ... - Stack Overflow
 
-def plot_global_cdf_grid(samples_by_st, sources, topics, max_cols=4):
-    """
-    samples_by_st: dict[(source,topic)] -> pd.Series of exposures
-    sources: list of source names (열 방향)
-    topics : list of topic names  (행 방향)
-    """
-    n_rows = len(topics)
-    n_cols = min(len(sources), max_cols)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 3*n_rows), squeeze=False)
 
-    for i, topic in enumerate(topics):
-        for j, source in enumerate(sources[:n_cols]):
-            ax = axes[i][j]
-            samp = samples_by_st.get((source, topic))
-            if samp is None or len(samp)==0:
-                ax.text(0.5,0.5,"(no data)",ha="center",va="center")
-                ax.set_xticks([]); ax.set_yticks([])
-                ax.set_title(f"{source}-{topic}")
-                continue
+22. Newest Questions - Stack Overflow
 
-            arr = np.sort(samp.to_numpy())
-            y = np.linspace(0,1,len(arr),endpoint=True)
-            ax.plot(arr, y, drawstyle="steps-post")
-            ax.set_title(f"{source}-{topic}")
-            ax.set_xlabel("Exposure")
-            ax.set_ylabel("CDF")
-    plt.tight_layout()
-    plt.show()
+
+23. android - What info google retains ... - Stack Overflow
+
+
+24. Medium: Read and write stories.
+
+
+25. 미디움 - Google 검색
+
+
+26. 미디움(Medium) 첫 사용기... | by Mina | Medium
+
+
+27. I’ll Instantly Know You Used Chat Gpt If I See This | by Ossai Chinedum...
+
+
+28. Reddit - 인터넷의 중심
+
+
+29. Best Animals & Pets 게시물 - Reddit
+
+
+30. Cats
+
+
+31. The art.. and the artist : r/cats
+
+
+32. X. 무슨 일이 일어나고 있나요? / X
+
+
+33. 연예인 x 계정ㅌ - Google 검색
+
+
+34. X에서 사윤목✒️ 님 : "요새 계정 가리지 않고 서치밴 현상이 심해지는 것 같아서..." / X
+
+
+35. 연예인 인스타 계정 - Google 검색
+
+
+36. Instagram
+
+
+37. Facebook - 로그인 또는 가입
+
+
+38. 연예인 핫이슈 | Facebook
+
+
+39. 연예인 페이스북 - Google 검색
+
+
+40. ‪#‎연예인‬ - 둘러보기
+
+
+41. ‪#‎연예인‬ - 둘러보기 | Facebook
+
+
+42. [사조공식샵] 살코기참치100g6캔 + 마일드참치100g6캔 NEW - AliExpress 2
+
+
+43. 천원마트
+
+
+44. Temu
+
+
+45. 알리익스프레스 – Better choices, better prices | 온라인 쇼핑 세일 - KO.AliExpress|AliExpress Korea
+
+
+46. Temu | 최신 의류, 뷰티, 홈, 주얼리 등
+
+
+47. 테무 스피커 - Google 검색
+
+
+48. Temu | 전자제품, 여성 의류, 남성 의류, 패션 쇼핑몰…
+
+
+49. NAVER
+
+
+50. Temu | 로그인
+
+
+
+다음 50개 보여줄까?
+
+51–100번째 타이틀입니다:
+
+51. 용산공원 : 네이버 검색
+
+
+52. 서울여행 용산공원 미군기지 부분개방부지 방문 .. : 네이버블로그
+
+
+53. 용산공원 부분개방부지 미군기지 위치 운영시간 .. : 네이버블로그
+
+
+54. [오늘스냅] 용산공원 미군기지에서 첫 커플 스.. : 네이버블로그
+
+
+55. 용산공원 - 네이버 지도
+
+
+56. 네이버 블로그
+
+
+57. 네이버 카페
+
+
+58. 레몬테라스 [인테리어,리폼,DIY,요리,결혼,육아,커뮤니티] : 네이버 카페
+
+
+59. 이승환 공식 팬카페 We are the DREAMFACTORY : 네이버 카페
+
+
+60. 네이버 : 로그인
+
+
+61. 규정 잘못 해석해서 소년체전 출전 금지? “12살 이하는 성별 분리보다 축제처럼 즐겁게 뛸 수 있어야”
+
+
+62. 네이버 뉴스
+
+
+63. 정치 : 네이버 뉴스
+
+
+64. "'대만에 주한미군 투입' 트럼프 공세 막을 이재명 카드는 '마스가'"
+
+
+65. 랭킹뉴스 : 네이버 뉴스
+
+
+66. 홈 : 네이버스포츠
+
+
+67. 야구 : 네이버스포츠
+
+
+68. 일정/결과 : 네이버 스포츠
+
+
+69. 영상 : 네이버 스포츠
+
+
+70. 기록,순위 : 네이버스포츠
+
+
+71. 롯데 자이언츠 : 네이버 스포츠
+
+
+72. 상무 철회→선발 탈락→4번째 2군행…김진욱은 김태형의 아픈손가락이 되고 있다
+
+
+73. 해외야구 : 네이버스포츠
+
+
+74. '좌익수→유격수→지명타자→중견수' 26일 ML 복귀하나? 김혜성, 재활경기 4G 연속 안타 쾅!
+
+
+75. 해외축구 : 네이버스포츠
+
+
+76. 네이버 e스포츠
+
+
+77. 네이버 지도
+
+
+78. 장소 - 네이버 지도
+
+
+79. 엘빙할루카 - 네이버 지도
+
+
+80. 에러 페이지 : 네이버 쇼핑
+
+
+81. 네이버 쇼핑 - Google 검색
+
+
+82. 쇼핑스토리 : 코지마
+
+
+83. 네이버+ 스토어
+
+
+84. 팝마트 정품인증 라부부 3세대 더 몬스터즈 하이라이트 캐릭터 미개봉 : 아디모
+
+
+85. 네이버 웹툰
+
+
+86. 육아일기 : 네이버 웹툰
+
+
+87. 육아일기 - 시즌2 29화 싫어싫어 : 네이버 웹툰
+
+
+88. 월요웹툰 : 네이버웹툰
+
+
+89. 마음의소리(였던 것) : 네이버 웹툰
+
+
+90. 마음의소리(였던 것) - 111화 돌돌이 : 네이버 웹툰
+
+
+91. 이찬혁 – Daum 검색
+
+
+92. 철인 3종 경기 – Daum 검색
+
+
+93. 李대통령, 트럼프와 30분 공개회담…'젤렌스키 참사' 그 자리
+
+
+94. Daum
+
+
+95. 카페홈 - Daum 카페
+
+
+96. ＊여성시대＊ 차분한 20대들의 알흠다운 공간 - Daum 카페
+
+
+97. 추천 - Daum 카페
+
+
+98. 재벌 아이돌 멤버가 다른 멤버랑 친해졌다고 느낀 순간.jpg - 웃긴자료 ‥‥‥‥‥、 - 도탁스 (DOTAX)
+
+
+99. 게시판 - 도탁스 (DOTAX)
+
+
+100. 웃긴자료 ‥‥‥‥‥、 - 도탁스 (DOTAX)
+
+
+
+다음 50개(101–150)도 보여드릴까요?
+
+101–150번째 타이틀입니다:
+
+101. 도탁스 (DOTAX)
+
+
+102. 티스토리
+
+
+103. 군산 맛집 복성루, 전국 5대 짬뽕집 솔직 후기 (짬뽕·물짜장·짜장밥)
+
+
+104. 전국5대 빵집 광주 궁전제과 충장점 빵 종류 | 공룡알빵, 나비파이
+
+
+105. airflow tistory - Google 검색
+
+
+106. 나무위키:대문 - 나무위키
+
+
+107. 꿈 많은 사람의 이야기
+
+
+108. 광림교회 - 나무위키
+
+
+109. 옌스 카스트로프 - 나무위키
+
+
+110. 브런치스토리
+
+
+111. 10화 에필로그
+
+
+112. 22화 누가 뭐라해도!!
+
+
+113. 17화 함께 읽지 못한 쪽지
+
+
+114. airflow 브런치 - Google 검색
+
+
+115. MCP for Airflow Cluster
+
+
+116. velog 우분투 - Google 검색
+
+
+117. 리눅스와 우분투
+
+
+118. 시리즈 | Linux / Ubuntu - SW-Kim.velog
+
+
+119. dahara3 (Seong Woong Kim) / 작성글 - velog
+
+
+120. velog
+
+
+121. "자바 전체 구조를 하루 만에 이해하는 법"
+
+
+122. 홈 : 네이트 뉴스
+
+
+123. 회담 때마다 '논란'…"본인 쇼타임" 트럼프식 협상 주의점은 : 네이트 뉴스
+
+
+124. [단독] "3만~6만표 걸렸다"…통일교 '김기현 당대표 몰아주기' 정황 : 네이트 뉴스
+
+
+125. IT/과학 : 네이트 뉴스
+
+
+126. 전체 - 최신뉴스 : 네이트 뉴스
+
+
+127. '첫, 사랑을 위하여' 최윤지 종양 고백→♥김민규와 달달 입맞춤 [종합] : 네이트 연예
+
+
+128. [단독]“전기료 나오니 선풍기 치워라”…경비원 산재 年5000건 육박｜동아일보
+
+
+129. 동아일보
+
+
+130. 조선일보 - 1등 디지털뉴스
+
+
+131. ‘反기업법 3탄’은 자사주 소각 의무화... 재계 “방어선 붕괴”
+
+
+132. 정치 뉴스 - 조선일보
+
+
+133. 스포츠 뉴스 - 조선일보
+
+
+134. 독일 혼혈 선수, 축구 국가대표팀에 첫 발탁
+
+
+135. 감동x2 안면이식술로 새 인생을 살게된 소녀 - 실시간 베스트 갤러리
+
+
+136. CONNECTING HEARTS! 디시인사이드입니다.
+
+
+137. 롯데 자이언츠 갤러리 - 커뮤니티 포털 디시인사이드
+
+
+138. 롯데 = 조국 '혼연일체'가 됨 - 롯데 자이언츠 갤러리
+
+
+139. 게임
+
+
+140. 루카쿠가 마마패 달고 나온 이유
+
+
+141. 루리웹 RULIWEB
+
+
+142. 유게이들이 유니클로에서 구입하면 큰 일 나는 옷
+
+
+143. 클리앙
+
+
+144. 클리앙 : 모두의공원
+
+
+145. 역대 육군참모총장의 친일 및 일본군 행적 : 클리앙
+
+
+146. 뽐뿌 - 사람이 좋아 함께하는 곳
+
+
+147. 뽐뿌 - 자유게시판
+
+
+148. 평양 최근 모습 jpg - 뽐뿌:자유게시판
+
+
+149. 더쿠
+
+
+150. 더쿠 - 보안 검사중
+
+
+
+👉 다음 151–200개도 보여드릴까요?
+
+151–200번째 타이틀입니다:
+
+151. 잠시만 기다리십시오…
+
+
+152. 에펨코리아 펨코 - 유머, 축구, 게임, 풋볼매니저
+
+
+153. 사슴과 같이 산다는 아파트 근황 ㅋㅋㅋㅋㅋㅋㅋㅋ .jpg - 포텐 터짐 화제순 - 에펨코리아
+
+
+154. 패션 - 에펨코리아
+
+
+155. 회색옷 조심하세요 - 패션 - 에펨코리아
+
+
+156. ↗ 파크에 오면 즐겁다 MLBPARK
+
+
+157. 엘지 강팀이 된 이유는 야생마 “피칭아카데미” 덕분이죠 : MLBPARK
+
+
+158. 인벤 - No.1 게임 미디어 플랫폼
+
+
+159. 카제로스 레이드 효과 톡톡 '로스트아크', 2계단 상승
+
+
+160. 메이플스토리 인벤
+
+
+161. 메이플스토리 인벤 자유게시판 - 메이플스토리 인벤
+
+
+162. 메이플스토리 인벤 : 하루만에 전커뮤 대통합을 이룬 경찰청 콜라보 홍보 ㅋㅋ - 메이플스토리 인벤 자유게시판
+
+
+163. 승리 요정+야구장 여신이었던 걸그룹 멤버 | 네이트 판
+
+
+164. 한눈에 보는 오늘 | 네이트 판
+
+
+165. 오늘의 판 : 오늘의 톡 : 2025.08.25 | 네이트 판
+
+
+166. 울집 귀요미 막둥이의 시~ | 네이트 판
+
+
+167. SOOP
+
+
+168. 항상#킴성태 - SOOP
+
+
+169. 믿고 사는 즐거움 SSG.COM
+
+
+170. [파주점] [올젠] 여름 나일론혼방 제로그램팬츠 DGR ZOE2PP1311 - SSG.COM
+
+
+171. 넥슨
+
+
+172. EA SPORTS FC ONLINE
+
+
+173. 비교하고 잘 사는, 다나와 : 가격비교 사이트
+
+
+174. 파라솔 : 다나와 가격비교
+
+
+175. 이고진 가보리 원터치형 접이식 파라솔 : 다나와 가격비교
+
+
+176. 아카라이브
+
+
+177. KBO 채널
+
+
+178. 올해 최고의 칰 경기라 생각하는 칰붕이는 개추ㅋㅋ - KBO 채널
+
+
+179. 일베저장소
+
+
+180. 일간-베스트 | 일베저장소
+
+
+181. 유승준 논란 이걸로 정리한다 | 일간-베스트 | 일베저장소
+
+
+182. 11번가
+
+
+183. 11번가 베스트 | 11번가
+
+
+184. [애플모음전/리퍼폰]아이폰15/14/13/12/11/8/promax/mini/SE3/SE2 공기계 자급제 무약정3사호환
+
+
+
+👉 다음 201–250도 보여드릴까요?
+
+
+
