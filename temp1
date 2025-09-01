@@ -1,16 +1,35 @@
-Topic,AppUsage_min,CEExercise_cnt,GalleryPOI_cnt,YouTube_min,WebTitle_cnt,NowBarSports_cnt
-Music,420,0,35,380,22,0
-Video,610,0,18,1240,15,0
-Game,280,0,12,520,9,0
-Travel,95,0,40,60,12,0
-Baseball,0,6,4,130,8,12
-Soccer,0,4,3,220,6,15
-Basketball,0,5,2,180,5,10
-Golf,0,3,1,95,3,8
-Dogs,0,0,28,45,5,0
-Finance,55,0,1,160,30,0
-Shopping,120,0,7,80,26,0
-Food,210,0,25,150,18,0
-Auto and Vehicles,85,0,5,70,14,0
-Education,160,0,2,90,20,0
-Others,1440,,110,310,77,
+,AppUsage,CE-Exercise,Gallery POI,Youtube Title,Web Title/URL,Now bar
+Movie,120,0,0,200,10,0
+Game,900,0,0,900,20,0
+Reading,60,0,0,60,10,0
+Webtoon,40,0,0,60,5,0
+Celebrity,30,0,0,600,10,0
+Baseball,20,0,0,300,5,0
+Basketball,20,0,0,300,5,0
+Soccer,20,0,0,400,5,0
+Golf,10,0,0,80,2,0
+Running,180,14,0,120,5,0
+Cycle,0,1,0,40,1,0
+Cricket,0,0,0,60,0,0
+Volleyball,0,0,0,60,0,0
+Tennis,10,0,0,200,2,0
+Other Sports,10,0,0,200,2,0
+Other Pets,0,0,0,40,0,0
+Dogs,0,0,0,50,0,0
+Cats,0,0,0,50,0,0
+Leisure,100,0,10,150,10,0
+Travel,120,0,60,400,80,0
+Camping,200,0,220,500,180,0
+Fishing,0,0,0,40,5,0
+Finance,30,0,0,80,10,0
+Stock,30,0,0,80,10,0
+Real estate,0,0,0,40,0,0
+Shopping,240,0,5,100,140,0
+Beauty,20,0,0,50,10,0
+Food,80,0,15,300,40,0
+Auto and Vehicles,90,0,0,120,60,0
+Education,0,0,0,100,5,0
+Childcare,0,0,0,0,0,0
+Social,40,0,0,60,10,0
+Art and Culture,30,0,5,100,10,0
+Nature,60,0,80,200,50,0
