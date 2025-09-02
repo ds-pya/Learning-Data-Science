@@ -1,194 +1,145 @@
-import numpy as np
-import math
+import numpy as np, math
 
-# ---------- helpers ----------
-def _to_array_and_keeper(x):
-    if isinstance(x, np.ndarray):
-        return x.astype(float, copy=False), ("ndarray", None)
-    if isinstance(x, (np.floating, float, int)):
-        return np.asarray([x], dtype=float), ("scalar", type(x))
-    if isinstance(x, (list, tuple)):
-        return np.asarray(x, dtype=float), ("list", type(x))
-    # np.float32/64 등
-    if isinstance(x, (np.float32, np.float64, np.int32, np.int64)):
-        return np.asarray([float(x)]), ("scalar", type(x))
+# ---------- 공통 헬퍼 ----------
+def _to_arr(x):
+    if isinstance(x, np.ndarray): return x.astype(float, copy=False), ("nd", None)
+    if isinstance(x, (list, tuple)): return np.asarray(x, dtype=float), ("list", type(x))
+    if isinstance(x, (np.floating, float, int, np.integer)): return np.asarray([float(x)]), ("scalar", type(x))
     # fallback
-    arr = np.asarray(x, dtype=float)
-    return arr, ("ndarray", None)
+    a = np.asarray(x, dtype=float); return a, ("nd", None)
 
-def _restore_type(arr_out, keeper):
-    kind, tp = keeper
-    if kind == "scalar":
-        v = float(arr_out[0])
-        # 입력이 int였다면 int로 강제하지는 않음(확률/누적이라 실수 유지)
-        return v
-    if kind == "list":
-        return arr_out.tolist()
-    return arr_out
+def _restore(y, keep):
+    k, tp = keep
+    if k == "scalar": return float(y[0])
+    if k == "list": return y.tolist()
+    return y
 
-def _is_integer_array(x, tol=1e-12):
-    return np.abs(x - np.round(x)) <= tol
+def _is_int(a, tol=1e-12):
+    return (np.abs(a - np.round(a)) <= tol)
 
-def _safe_log1p(x):
-    # 큰 값 안정화용: log(1+x)
-    return np.log1p(x)
+# ---------- ZILN(p0, median, p90) ----------
+# median = exp(mu), p90 = exp(mu + z90*sigma), z90≈1.2815515655446004
+def _ziln_mu_sigma(median, p90):
+    z90 = 1.2815515655446004
+    mu = np.log(median)
+    sigma = (np.log(p90) - np.log(median)) / z90
+    if sigma <= 0: raise ValueError("p90>median 이어야 합니다.")
+    return mu, sigma
 
-def _normal_cdf(z):
-    # Φ(z) = 0.5 * (1 + erf(z/sqrt(2)))
-    return 0.5 * (1.0 + np.erf(z / np.sqrt(2.0)))
-
-# ---------- ZILN: Zero-Inflated LogNormal ----------
-# params: pi in [0,1] (zero inflation), mu, sigma>0 (lognormal)
-def ziln_pdf(x, pi, mu, sigma):
-    arr, keep = _to_array_and_keeper(x)
-    out = np.zeros_like(arr, dtype=float)
-
-    pos = arr > 0
+def ziln_pdf(x, p0, median, p90):
+    a, keep = _to_arr(x)
+    mu, sg = _ziln_mu_sigma(median, p90)
+    out = np.zeros_like(a, dtype=float)
+    pos = a > 0
     if np.any(pos):
-        z = (np.log(arr[pos]) - mu) / sigma
-        # log-pdf (안정화)
-        log_pdf = -np.log(arr[pos]) - np.log(sigma) - 0.5*np.log(2*np.pi) - 0.5*(z**2)
-        out[pos] = (1.0 - pi) * np.exp(log_pdf)
+        z = (np.log(a[pos]) - mu) / sg
+        # log-pdf(안정화)
+        logpdf = -np.log(a[pos]) - np.log(sg) - 0.5*np.log(2*np.pi) - 0.5*z*z
+        out[pos] = (1.0 - p0) * np.exp(logpdf)
+    # a==0은 점질량(p0)이고 연속 pdf는 0
+    return _restore(out, keep)
 
-    at0 = arr == 0
-    # 연속분포의 밀도는 0에서 0이나, ZI의 점질량은 확률질량이므로 pdf 개념상 0(연속)과 구분됩니다.
-    # 필요시 "point-mass" 확인용으로 별도 반환이 필요하나, 여기서는 pdf 배열만 반환(0 유지).
-    # pmf 형태가 필요한 경우는 ZIP/ZINB를 사용하세요.
-
-    return _restore_type(out, keep)
-
-def ziln_cdf_mid(x, pi, mu, sigma):
-    arr, keep = _to_array_and_keeper(x)
-    out = np.zeros_like(arr, dtype=float)
-
-    # x < 0 : 0
-    lt0 = arr < 0
-    out[lt0] = 0.0
-
-    # x == 0 : mid 적용 -> pi/2
-    at0 = arr == 0
-    out[at0] = 0.5 * pi
-
-    # x > 0 : F = pi + (1-pi)*Φ((ln x - mu)/sigma)
-    gt0 = arr > 0
+def ziln_cdf_mid(x, p0, median, p90):
+    a, keep = _to_arr(x)
+    mu, sg = _ziln_mu_sigma(median, p90)
+    out = np.zeros_like(a, dtype=float)
+    out[a < 0] = 0.0
+    at0 = (a == 0)
+    out[at0] = 0.5 * p0
+    gt0 = a > 0
     if np.any(gt0):
-        z = (np.log(arr[gt0]) - mu) / sigma
-        out[gt0] = pi + (1.0 - pi) * _normal_cdf(z)
+        z = (np.log(a[gt0]) - mu) / sg
+        # Φ(z) = 0.5*(1+erf(z/sqrt(2)))
+        cdf_ln = 0.5*(1.0 + np.erf(z/np.sqrt(2.0)))
+        out[gt0] = p0 + (1.0 - p0) * cdf_ln
+    return _restore(out, keep)
 
-    return _restore_type(out, keep)
+# ---------- ZIP(p0, mean) ----------
+# 주어진 mean=m과 P(X=0)=p0에서 λ, ω(구조적 zero 비율) 해결:
+# m = (1-ω)λ, p0 = ω + (1-ω) e^{-λ} -> λ는 f(λ)=1 - (m/λ)(1-e^{-λ}) - p0 = 0의 해
+def _zip_lambda_omega(p0, m, tol=1e-10, max_iter=200):
+    if m <= 0: return 0.0, 1.0  # 평균 0이면 모두 0
+    # 실현 가능성 체크: p0 >= e^{-m} (ω=0일 때 최소 zero)
+    if p0 < np.exp(-m) - 1e-12:
+        raise ValueError("주어진 (p0, mean) 조합은 ZIP로 불가(p0<exp(-mean)).")
+    # 특수해: ω=0 가능
+    if abs(p0 - np.exp(-m)) <= 1e-12:
+        return m, 0.0
+    # 이분법
+    f = lambda lam: 1.0 - (m/lam)*(1.0 - np.exp(-lam)) - p0
+    lo, hi = 1e-12, max(10.0, m*20.0)
+    flo, fhi = f(lo), f(hi)
+    # 단조는 아니지만 보통 부호차 존재. 없으면 hi를 키움
+    grow = 0
+    while flo*fhi > 0 and grow < 20:
+        hi *= 2.0
+        fhi = f(hi); grow += 1
+    if flo*fhi > 0:
+        # 수치적으로 곤란하면 뉴턴 보조
+        lam = max(m, 1.0)
+        for _ in range(50):
+            e = np.exp(-lam)
+            g = 1.0 - (m/lam)*(1.0 - e) - p0
+            dg = m*((1.0 - e)/lam**2 - e/lam)
+            step = g/dg
+            lam -= step
+            if lam <= 1e-9: lam = 1e-9
+            if abs(step) < 1e-10: break
+        lam = float(lam)
+    else:
+        # 표준 이분법
+        for _ in range(max_iter):
+            mid = 0.5*(lo+hi)
+            fm = f(mid)
+            if abs(fm) < tol or (hi-lo) < 1e-10:
+                lam = float(mid); break
+            if flo*fm <= 0: hi, fhi = mid, fm
+            else: lo, flo = mid, fm
+        else:
+            lam = float(0.5*(lo+hi))
+    omega = 1.0 - m/lam
+    omega = min(max(omega, 0.0), 1.0)
+    return lam, omega
 
-# ---------- ZIP: Zero-Inflated Poisson ----------
-# params: omega in [0,1], lam>0
 def _poisson_logpmf(k, lam):
-    # log P = -lam + k*log(lam) - lgamma(k+1)
-    # k, lam는 브로드캐스트 가능해야 함
-    k = np.asarray(k)
-    lam = np.asarray(lam)
+    # log pmf = -lam + k*log(lam) - lgamma(k+1)
     logfac = np.vectorize(math.lgamma)(k + 1.0)
-    return -lam + k * np.log(lam) - logfac
+    return -lam + k*np.log(lam) - logfac
 
-def zip_pdf(x, omega, lam):
-    arr, keep = _to_array_and_keeper(x)
-    out = np.zeros_like(arr, dtype=float)
-
-    # 비정수는 0
-    is_int = _is_integer_array(arr) & (arr >= 0)
-    k = np.round(arr[is_int]).astype(int)
-
-    if np.any(is_int):
-        logpmf = _poisson_logpmf(k, lam)
-        base_pmf = np.exp(logpmf)
-        pmf = (1.0 - omega) * base_pmf
-        # k==0에 zero-inflation 질량 더하기
+def zip_pdf(x, p0, mean):
+    a, keep = _to_arr(x)
+    out = np.zeros_like(a, dtype=float)
+    lam, omega = _zip_lambda_omega(p0, mean)
+    ok = _is_int(a) & (a >= 0)
+    if np.any(ok):
+        k = np.round(a[ok]).astype(int)
+        logpmf = _poisson_logpmf(k.astype(float), lam)
+        pmf = (1.0 - omega) * np.exp(logpmf)
         pmf[k == 0] += omega
-        out[is_int] = pmf
+        out[ok] = pmf
+    return _restore(out, keep)
 
-    return _restore_type(out, keep)
-
-def zip_cdf_mid(x, omega, lam, kmax=None):
-    arr, keep = _to_array_and_keeper(x)
-    out = np.zeros_like(arr, dtype=float)
-
-    # 음수 -> 0
-    out[arr < 0] = 0.0
-
-    # 누적 합산을 위해 floor(x)까지 pmf 합
-    # 성능 이슈 방지를 위해 상한 kmax 제공 가능(없으면 floor(x) 사용)
-    xf = np.floor(arr).astype(int)
-    n = arr.size
-
-    for i in range(n):
-        xi = arr[i]
-        if xi < 0:
-            continue
-        k_floor = int(xf[i]) if kmax is None else min(int(xf[i]), int(kmax))
-        ks = np.arange(0, k_floor + 1, dtype=int)
+def zip_cdf_mid(x, p0, mean):
+    a, keep = _to_arr(x)
+    out = np.zeros_like(a, dtype=float)
+    lam, omega = _zip_lambda_omega(p0, mean)
+    out[a < 0] = 0.0
+    # 정수/비정수 분기
+    xf = np.floor(a).astype(int)
+    for i, xi in enumerate(a):
+        if xi < 0: continue
+        kf = int(xf[i])
+        ks = np.arange(0, kf+1, dtype=float)
         logpmf = _poisson_logpmf(ks, lam)
         pmf = (1.0 - omega) * np.exp(logpmf)
-        if ks.size > 0 and ks[0] == 0:
-            pmf[0] += omega
-        cdf_at_floor = pmf.sum()
-
-        # mid: 정수면 0.5*pmf(k), 아니면 그대로
-        if _is_integer_array(np.asarray([xi]))[0]:
-            pmf_x = zip_pdf(xi, omega, lam)
-            out[i] = (cdf_at_floor - pmf_x) + 0.5 * pmf_x
+        if pmf.size > 0: pmf[0] += omega
+        cdf_floor = pmf.sum()
+        if _is_int(np.asarray([xi]))[0]:
+            # mid-CDF
+            # pmf(xi)
+            pmf_x = (1.0 - omega) * np.exp(_poisson_logpmf(float(kf), lam))
+            if kf == 0: pmf_x += omega
+            out[i] = (cdf_floor - pmf_x) + 0.5*pmf_x
         else:
-            out[i] = cdf_at_floor
-
-    return _restore_type(out, keep)
-
-# ---------- ZINB: Zero-Inflated Negative Binomial ----------
-# 파라미터화: r>0, p in (0,1)
-# pmf(k) = C(k+r-1, k) * (1-p)^r * p^k  (k=0,1,2,...)
-def _nb_logpmf(k, r, p):
-    # log C = lgamma(k+r) - lgamma(r) - lgamma(k+1)
-    k = np.asarray(k, dtype=float)
-    r = float(r)
-    p = float(p)
-    logC = np.vectorize(math.lgamma)(k + r) - math.lgamma(r) - np.vectorize(math.lgamma)(k + 1.0)
-    return logC + r * np.log(1.0 - p) + k * np.log(p)
-
-def zinb_pdf(x, omega, r, p):
-    arr, keep = _to_array_and_keeper(x)
-    out = np.zeros_like(arr, dtype=float)
-
-    is_int = _is_integer_array(arr) & (arr >= 0)
-    k = np.round(arr[is_int]).astype(int)
-
-    if np.any(is_int):
-        logpmf = _nb_logpmf(k, r, p)
-        base_pmf = np.exp(logpmf)
-        pmf = (1.0 - omega) * base_pmf
-        pmf[k == 0] += omega
-        out[is_int] = pmf
-
-    return _restore_type(out, keep)
-
-def zinb_cdf_mid(x, omega, r, p, kmax=None):
-    arr, keep = _to_array_and_keeper(x)
-    out = np.zeros_like(arr, dtype=float)
-
-    out[arr < 0] = 0.0
-    xf = np.floor(arr).astype(int)
-    n = arr.size
-
-    for i in range(n):
-        xi = arr[i]
-        if xi < 0:
-            continue
-        k_floor = int(xf[i]) if kmax is None else min(int(xf[i]), int(kmax))
-        ks = np.arange(0, k_floor + 1, dtype=int)
-        logpmf = _nb_logpmf(ks, r, p)
-        pmf = (1.0 - omega) * np.exp(logpmf)
-        if ks.size > 0 and ks[0] == 0:
-            pmf[0] += omega
-        cdf_at_floor = pmf.sum()
-
-        if _is_integer_array(np.asarray([xi]))[0]:
-            pmf_x = zinb_pdf(xi, omega, r, p)
-            out[i] = (cdf_at_floor - pmf_x) + 0.5 * pmf_x
-        else:
-            out[i] = cdf_at_floor
-
-    return _restore_type(out, keep)
+            out[i] = cdf_floor
+    return _restore(out, keep)
