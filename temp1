@@ -1,35 +1,43 @@
-,AppUsage,CE-Exercise,Gallery POI,Youtube Title,Web Title/URL,Now bar
-Movie,120,0,0,200,10,0
-Game,900,0,0,900,20,0
-Reading,60,0,0,60,10,0
-Webtoon,40,0,0,60,5,0
-Celebrity,30,0,0,600,10,0
-Baseball,20,0,0,300,5,0
-Basketball,20,0,0,300,5,0
-Soccer,20,0,0,400,5,0
-Golf,10,0,0,80,2,0
-Running,180,14,0,120,5,0
-Cycle,0,1,0,40,1,0
-Cricket,0,0,0,60,0,0
-Volleyball,0,0,0,60,0,0
-Tennis,10,0,0,200,2,0
-Other Sports,10,0,0,200,2,0
-Other Pets,0,0,0,40,0,0
-Dogs,0,0,0,50,0,0
-Cats,0,0,0,50,0,0
-Leisure,100,0,10,150,10,0
-Travel,120,0,60,400,80,0
-Camping,200,0,220,500,180,0
-Fishing,0,0,0,40,5,0
-Finance,30,0,0,80,10,0
-Stock,30,0,0,80,10,0
-Real estate,0,0,0,40,0,0
-Shopping,240,0,5,100,140,0
-Beauty,20,0,0,50,10,0
-Food,80,0,15,300,40,0
-Auto and Vehicles,90,0,0,120,60,0
-Education,0,0,0,100,5,0
-Childcare,0,0,0,0,0,0
-Social,40,0,0,60,10,0
-Art and Culture,30,0,5,100,10,0
-Nature,60,0,80,200,50,0
+{
+  "Entertainment": {
+    "Music":     {"Distribution": "ZILN", "Parameter": {"p0":0.25, "median":30,  "p90":180}},
+    "Video":     {"Distribution": "ZILN", "Parameter": {"p0":0.20, "median":45,  "p90":240}},
+    "Movie":     {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":20,  "p90":120}},
+    "Game":      {"Distribution": "ZILN", "Parameter": {"p0":0.30, "median":25,  "p90":150}},
+    "Webtoon":   {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":20,  "p90":90}},
+    "Celebrity": {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":25,  "p90":120}}
+  },
+  "Sports": {
+    "Baseball":   {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":15, "p90":90}},
+    "Basketball": {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":15, "p90":90}},
+    "Soccer":     {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":20, "p90":120}},
+    "Golf":       {"Distribution": "ZILN", "Parameter": {"p0":0.50, "median":10, "p90":60}},
+    "Running":    {"Distribution": "ZILN", "Parameter": {"p0":0.55, "median":10, "p90":45}},
+    "Cycle":      {"Distribution": "ZILN", "Parameter": {"p0":0.55, "median":10, "p90":45}},
+    "OtherSports":{"Distribution": "ZILN", "Parameter": {"p0":0.45, "median":15, "p90":90}}
+  },
+  "Lifestyle": {
+    "Travel":     {"Distribution": "ZILN", "Parameter": {"p0":0.30, "median":30, "p90":180}},
+    "Camping":    {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":20, "p90":120}},
+    "Fishing":    {"Distribution": "ZILN", "Parameter": {"p0":0.50, "median":15, "p90":90}},
+    "Shopping":   {"Distribution": "ZILN", "Parameter": {"p0":0.25, "median":30, "p90":150}},
+    "Beauty":     {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":25, "p90":120}},
+    "Food":       {"Distribution": "ZILN", "Parameter": {"p0":0.30, "median":35, "p90":180}},
+    "Auto":       {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":20, "p90":120}}
+  },
+  "Knowledge/Info": {
+    "Finance":    {"Distribution": "ZILN", "Parameter": {"p0":0.30, "median":40, "p90":200}},
+    "Stock":      {"Distribution": "ZILN", "Parameter": {"p0":0.25, "median":45, "p90":220}},
+    "RealEstate": {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":30, "p90":150}},
+    "Education":  {"Distribution": "ZILN", "Parameter": {"p0":0.25, "median":50, "p90":240}},
+    "Childcare":  {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":25, "p90":120}},
+    "Social":     {"Distribution": "ZILN", "Parameter": {"p0":0.30, "median":35, "p90":180}},
+    "ArtCulture": {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":20, "p90":120}},
+    "Nature":     {"Distribution": "ZILN", "Parameter": {"p0":0.45, "median":15, "p90":90}}
+  },
+  "Pets": {
+    "Dogs":       {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":25, "p90":120}},
+    "Cats":       {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":20, "p90":90}},
+    "OtherPets":  {"Distribution": "ZILN", "Parameter": {"p0":0.45, "median":15, "p90":90}}
+  }
+}
