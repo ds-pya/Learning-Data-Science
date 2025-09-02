@@ -1,43 +1,12 @@
 {
-  "Entertainment": {
-    "Music":     {"Distribution": "ZILN", "Parameter": {"p0":0.25, "median":30,  "p90":180}},
-    "Video":     {"Distribution": "ZILN", "Parameter": {"p0":0.20, "median":45,  "p90":240}},
-    "Movie":     {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":20,  "p90":120}},
-    "Game":      {"Distribution": "ZILN", "Parameter": {"p0":0.30, "median":25,  "p90":150}},
-    "Webtoon":   {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":20,  "p90":90}},
-    "Celebrity": {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":25,  "p90":120}}
-  },
-  "Sports": {
-    "Baseball":   {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":15, "p90":90}},
-    "Basketball": {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":15, "p90":90}},
-    "Soccer":     {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":20, "p90":120}},
-    "Golf":       {"Distribution": "ZILN", "Parameter": {"p0":0.50, "median":10, "p90":60}},
-    "Running":    {"Distribution": "ZILN", "Parameter": {"p0":0.55, "median":10, "p90":45}},
-    "Cycle":      {"Distribution": "ZILN", "Parameter": {"p0":0.55, "median":10, "p90":45}},
-    "OtherSports":{"Distribution": "ZILN", "Parameter": {"p0":0.45, "median":15, "p90":90}}
-  },
-  "Lifestyle": {
-    "Travel":     {"Distribution": "ZILN", "Parameter": {"p0":0.30, "median":30, "p90":180}},
-    "Camping":    {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":20, "p90":120}},
-    "Fishing":    {"Distribution": "ZILN", "Parameter": {"p0":0.50, "median":15, "p90":90}},
-    "Shopping":   {"Distribution": "ZILN", "Parameter": {"p0":0.25, "median":30, "p90":150}},
-    "Beauty":     {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":25, "p90":120}},
-    "Food":       {"Distribution": "ZILN", "Parameter": {"p0":0.30, "median":35, "p90":180}},
-    "Auto":       {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":20, "p90":120}}
-  },
-  "Knowledge/Info": {
-    "Finance":    {"Distribution": "ZILN", "Parameter": {"p0":0.30, "median":40, "p90":200}},
-    "Stock":      {"Distribution": "ZILN", "Parameter": {"p0":0.25, "median":45, "p90":220}},
-    "RealEstate": {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":30, "p90":150}},
-    "Education":  {"Distribution": "ZILN", "Parameter": {"p0":0.25, "median":50, "p90":240}},
-    "Childcare":  {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":25, "p90":120}},
-    "Social":     {"Distribution": "ZILN", "Parameter": {"p0":0.30, "median":35, "p90":180}},
-    "ArtCulture": {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":20, "p90":120}},
-    "Nature":     {"Distribution": "ZILN", "Parameter": {"p0":0.45, "median":15, "p90":90}}
-  },
-  "Pets": {
-    "Dogs":       {"Distribution": "ZILN", "Parameter": {"p0":0.35, "median":25, "p90":120}},
-    "Cats":       {"Distribution": "ZILN", "Parameter": {"p0":0.40, "median":20, "p90":90}},
-    "OtherPets":  {"Distribution": "ZILN", "Parameter": {"p0":0.45, "median":15, "p90":90}}
-  }
+  "Baseball":    {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.40, "median": 120, "p90": 600}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
+  "Basketball":  {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.35, "median": 150, "p90": 720}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
+  "Soccer":      {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.35, "median": 180, "p90": 900}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
+  "Golf":        {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.45, "median": 240, "p90": 900}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
+  "Running":     {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.25, "median": 240, "p90": 900}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
+  "Cycle":       {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.28, "median": 300, "p90": 1200}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
+  "Cricket":     {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.45, "median": 120, "p90": 600}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
+  "Volleyball":  {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.40, "median": 120, "p90": 600}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
+  "Tennis":      {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.38, "median": 180, "p90": 720}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
+  "Other Sports":{"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.40, "median": 120, "p90": 600}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0}
 }
