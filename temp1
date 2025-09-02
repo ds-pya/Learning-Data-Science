@@ -1,12 +1,32 @@
-{
-  "Baseball":    {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.40, "median": 120, "p90": 600}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
-  "Basketball":  {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.35, "median": 150, "p90": 720}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
-  "Soccer":      {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.35, "median": 180, "p90": 900}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
-  "Golf":        {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.45, "median": 240, "p90": 900}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
-  "Running":     {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.25, "median": 240, "p90": 900}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
-  "Cycle":       {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.28, "median": 300, "p90": 1200}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
-  "Cricket":     {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.45, "median": 120, "p90": 600}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
-  "Volleyball":  {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.40, "median": 120, "p90": 600}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
-  "Tennis":      {"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.38, "median": 180, "p90": 720}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0},
-  "Other Sports":{"Cover": true, "Distribution": "ZILN", "Parameter": {"p0": 0.40, "median": 120, "p90": 600}, "FallbackSourceWeight": 0.0, "FallbackTopicWeight": 0.0}
-}
+,AppUsage,CE-Exercise,Gallery POI,Youtube Title,Web Title/URL,Now bar
+Movie,80,0,0,120,60,0
+Game,300,0,0,200,40,0
+Reading,30,0,0,40,20,0
+Webtoon,60,0,0,50,20,0
+Celebrity,40,0,0,180,50,0
+Baseball,20,0,0,60,20,0
+Basketball,20,0,0,50,20,0
+Soccer,30,0,0,80,30,0
+Golf,10,0,0,20,10,0
+Running,40,60,0,20,0,0
+Other Sports,10,0,0,40,10,0
+Other Pets,0,0,0,10,0,0
+Dogs,0,0,0,10,0,0
+Cats,0,0,0,10,0,0
+Leisure,60,0,5,80,20,0
+Travel,40,0,10,100,30,0
+Camping,20,0,10,40,20,0
+Fishing,10,0,0,20,10,0
+Finance,30,0,0,40,30,0
+Stock,30,0,0,40,30,0
+Real estate,20,0,0,30,20,0
+Shopping,100,0,5,60,40,0
+Beauty,30,0,0,20,20,0
+Food,60,0,10,100,40,0
+Auto and Vehicles,40,0,0,30,30,0
+Education,30,0,0,40,20,0
+Childcare,0,0,0,0,0,0
+Social,120,0,0,80,40,0
+Art and Culture,20,0,5,30,20,0
+Nature,30,0,5,40,20,0
+Others,100,20,10,200,80,0
