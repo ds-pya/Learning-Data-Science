@@ -1,158 +1,83 @@
-private fun zeroInflatedLogNormal(value: Double, p0: Double, median: Double, p90: Double): Double {
-    fun erf(x: Double): Double {
-        // Abramowitz–Stegun 7.1.26
-        val a1 = 0.254829592; val a2 = -0.284496736; val a3 = 1.421413741
-        val a4 = -1.453152027; val a5 = 1.061405429; val p = 0.3275911
-        val sign = if (x < 0) -1.0 else 1.0
-        val ax = kotlin.math.abs(x)
-        val t = 1.0 / (1.0 + p * ax)
-        val y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * kotlin.math.exp(-ax * ax)
-        return sign * y
+data class Interest(val topic: String, val v1: Double, val v2: Double)
+
+class ScorePyramidFragment : Fragment() {
+
+    private val score1: Map<String, Double> = mapOf(/* topic to v1 */)
+    private val score2: Map<String, Double> = mapOf(/* topic to v2 */)
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
+    ): View {
+        val tv = TextView(requireContext()).apply {
+            typeface = Typeface.MONOSPACE
+            textSize = 13f
+            setPadding(24, 24, 24, 24)
+        }
+        val root = FrameLayout(requireContext()).apply { addView(tv) }
+
+        // 레이아웃 폭이 정해진 뒤에 문자열 생성
+        tv.post {
+            val records = score1.entries
+                .map { (t, v) -> Interest(t, v, score2[t] ?: 0.0) }
+                .sortedByDescending { it.v1 }
+
+            tv.text = buildPyramidString(
+                textWidthPx = tv.width - tv.paddingLeft - tv.paddingRight,
+                paint = tv.paint,
+                records = records
+            )
+        }
+        return root
     }
-    fun stdNormCdf(x: Double): Double = 0.5 * (1.0 + erf(x / kotlin.math.sqrt(2.0)))
-
-    if (value.isNaN() || p0.isNaN() || median.isNaN() || p90.isNaN()) return Double.NaN
-    val pp0 = p0.coerceIn(0.0, 0.999999999999) // avoid 1.0 exact
-    if (value < 0.0) return 0.0
-    if (value == 0.0) return (pp0 * 0.5).coerceIn(0.0, 1.0)
-
-    val safeMedian = kotlin.math.max(median, 1e-12)
-    val z90 = 1.2815515655446004
-    val mu = kotlin.math.ln(safeMedian)
-
-    val safeP90 = kotlin.math.max(p90, safeMedian * (1.0 + 1e-12))
-    val sigma = kotlin.math.max((kotlin.math.ln(safeP90) - mu) / z90, 1e-9)
-
-    val cdfLN = stdNormCdf((kotlin.math.ln(value) - mu) / sigma)
-    val pct = pp0 + (1.0 - pp0) * cdfLN
-    return pct.coerceIn(0.0, 1.0)
 }
 
-private fun zeroInflatedNegativeBinomial(
-    value: Double,
-    p0: Double,
-    mean: Double,
-    variance: Double
-): Double {
-    // 안전 장치
-    if (!value.isFinite() || !p0.isFinite() || !mean.isFinite() || !variance.isFinite()) return Double.NaN
-    if (value < 0.0) return 0.0
-    val pp0 = p0.coerceIn(0.0, 1.0 - 1e-12)
-    val m = maxOf(mean, 1e-12)
-    val v = maxOf(variance, m * (1.0 + 1e-9)) // NB는 var > mean 필요
+/** 인구 피라미드 스타일 문자열 생성 */
+fun buildPyramidString(
+    textWidthPx: Int,
+    paint: TextPaint,
+    records: List<Interest>,
+    sep: String = " │ "
+): String {
+    // 한 글자 폭(모노스페이스 전제)
+    val charW = paint.measureText("M").coerceAtLeast(1f)
+    val totalCols = (textWidthPx / charW).toInt().coerceAtLeast(40)
 
-    // NB(r, p): mean = r*(1-p)/p, var = r*(1-p)/p^2
-    // r = m^2/(v-m), p = r/(r+m)
-    val r = maxOf(m * m / (v - m), 1e-9)
-    val p = (r / (r + m)).coerceIn(1e-12, 1.0 - 1e-12)
-    val q = 1.0 - p
+    // 헤더/분할: [leftBars] + sep + [topic] + sep + [rightBars]
+    val topicCols = minOf(
+        maxOf(records.maxOfOrNull { it.topic.length } ?: 8, 8),
+        24
+    )
+    val sepCols = (sep.length * 2)
+    val sideCols = ((totalCols - topicCols - sepCols).coerceAtLeast(10)) / 2
+    val leftCols = sideCols
+    val rightCols = sideCols
 
-    // NB pmf(0) = p^r  (안정적 계산)
-    fun nbPmf0(): Double = kotlin.math.exp(r * kotlin.math.ln(p))
+    // 스케일(좌우 독립)
+    val maxL = records.maxOfOrNull { it.v1 }?.takeIf { it > 0 } ?: 1.0
+    val maxR = records.maxOfOrNull { it.v2 }?.takeIf { it > 0 } ?: 1.0
 
-    // 재귀로 pmf 누적 (안정/빠름)
-    // pmf(k+1) = pmf(k) * q * (k + r) / (k + 1)
-    fun nbCdfMid(k: Int): Pair<Double, Double> {
-        // 반환: (cdf_below_k, pmf_at_k)
-        if (k < 0) return 0.0 to 0.0
-        var pmf = nbPmf0()
-        if (!pmf.isFinite()) pmf = 0.0
-        var cdf = 0.0
-        for (i in 0 until k) {
-            cdf += pmf
-            // 다음 pmf
-            val ratio = q * ((i + r) / (i + 1.0))
-            pmf *= ratio
-            if (!pmf.isFinite()) { // under/overflow 방지
-                pmf = 0.0
-                break
-            }
-        }
-        // 여기서 pmf는 k번째
-        return cdf to pmf
+    fun barLeft(v: Double): String {
+        val len = (v / maxL * leftCols).roundToInt().coerceIn(0, leftCols)
+        // 중앙 정렬(오른쪽 끝 맞춤)
+        return " ".repeat(leftCols - len) + "=".repeat(len)
     }
-
-    if (value == 0.0) {
-        val pmf0 = nbPmf0()
-        val mixP0 = (pp0 + (1.0 - pp0) * pmf0)
-        return mixP0 * 0.5
+    fun barRight(v: Double): String {
+        val len = (v / maxR * rightCols).roundToInt().coerceIn(0, rightCols)
+        // 중앙에서 오른쪽으로
+        return "-".repeat(len) + " ".repeat(rightCols - len)
     }
+    fun fitTopic(t: String): String =
+        if (t.length <= topicCols) t.padEnd(topicCols)
+        else t.take(topicCols - 1) + "…"
 
-    val k = kotlin.math.floor(value).toInt()
-    val (nbCdfBelowK, nbPmfK) = nbCdfMid(k)
-
-    // 혼합 CDF(mid-P): sum(<k) + 0.5*at k
-    val sumBelow = pp0 + (1.0 - pp0) * nbCdfBelowK
-    val midAtK = (1.0 - pp0) * 0.5 * nbPmfK
-    val pct = (sumBelow + midAtK).coerceIn(0.0, 1.0)
-    return pct
-}
-
-private fun zeroInflatedPoisson(
-    value: Double,
-    p0: Double,
-    mean: Double
-): Double {
-    // ---- safety ----
-    if (!value.isFinite() || !p0.isFinite() || !mean.isFinite()) return Double.NaN
-    if (value < 0.0) return 0.0
-    val pp0 = p0.coerceIn(0.0, 1.0 - 1e-12)
-    val lambda = maxOf(mean, 1e-12)
-
-    // erf / Φ for normal approximation (large λ safeguard)
-    fun erf(x: Double): Double {
-        val a1 = 0.254829592; val a2 = -0.284496736; val a3 = 1.421413741
-        val a4 = -1.453152027; val a5 = 1.061405429; val p = 0.3275911
-        val sign = if (x < 0) -1.0 else 1.0
-        val ax = kotlin.math.abs(x)
-        val t = 1.0 / (1.0 + p * ax)
-        val y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * kotlin.math.exp(-ax * ax)
-        return sign * y
-    }
-    fun stdNormCdf(x: Double): Double = 0.5 * (1.0 + erf(x / kotlin.math.sqrt(2.0)))
-
-    // Poisson pmf/cdf helpers
-    fun poiPmf0(): Double = kotlin.math.exp(-lambda).let { if (it.isFinite()) it else 0.0 }
-
-    // exact recursion for moderate λ/k, else normal approx + log-pmf
-    fun logFactorial(n: Int): Double {
-        if (n < 2) return 0.0
-        val nn = n.toDouble()
-        val t1 = nn * kotlin.math.ln(nn) - nn
-        val t2 = 0.5 * kotlin.math.ln(2.0 * kotlin.math.PI * nn)
-        val t3 = 1.0 / (12.0 * nn) - 1.0 / (360.0 * nn * nn * nn)
-        return t1 + t2 + t3
-    }
-    fun cdfBelowAndPmfAt(k: Int): Pair<Double, Double> {
-        if (lambda <= 50.0 && k <= 2000) {
-            var pmf = poiPmf0()
-            var cdf = 0.0
-            var i = 0
-            while (i < k) {
-                cdf += pmf
-                pmf *= lambda / (i + 1.0)
-                if (!pmf.isFinite()) { pmf = 0.0; break }
-                i++
-            }
-            return cdf to pmf // pmf is at k
-        } else {
-            val sd = kotlin.math.sqrt(lambda)
-            val cdfBelow = stdNormCdf((k - 0.5 - lambda) / sd).coerceIn(0.0, 1.0)
-            val logPmf = -lambda + k * kotlin.math.ln(lambda) - logFactorial(k)
-            val pmf = kotlin.math.exp(logPmf).let { if (it.isFinite()) it else 0.0 }
-            return cdfBelow to pmf
+    return buildString {
+        appendLine("======== score ========")
+        appendLine(
+            " ".repeat(leftCols - 2) + "v1" +
+            sep + "topic".padEnd(topicCols) + sep + "v2"
+        )
+        records.forEach { r ->
+            appendLine("${barLeft(r.v1)}$sep${fitTopic(r.topic)}$sep${barRight(r.v2)}")
         }
     }
-
-    // mid-P rule
-    if (value == 0.0) {
-        val pmf0 = poiPmf0()
-        return ((pp0 + (1.0 - pp0) * pmf0) * 0.5).coerceIn(0.0, 1.0)
-    }
-
-    val k = kotlin.math.floor(value).toInt()
-    val (cdfBelowK, pmfK) = cdfBelowAndPmfAt(k)
-    val mixBelow = pp0 + (1.0 - pp0) * cdfBelowK
-    val pct = (mixBelow + (1.0 - pp0) * 0.5 * pmfK).coerceIn(0.0, 1.0)
-    return pct
 }
