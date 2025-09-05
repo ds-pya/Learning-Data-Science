@@ -1,32 +1,29 @@
-,AppUsage,CE-Exercise,Gallery POI,Youtube Title,Web Title/URL,Now bar
-Movie,80,0,0,120,60,0
-Game,300,0,0,200,40,0
-Reading,30,0,0,40,20,0
-Webtoon,60,0,0,50,20,0
-Celebrity,40,0,0,180,50,0
-Baseball,20,0,0,60,20,0
-Basketball,20,0,0,50,20,0
-Soccer,30,0,0,80,30,0
-Golf,10,0,0,20,10,0
-Running,40,60,0,20,0,0
-Other Sports,10,0,0,40,10,0
-Other Pets,0,0,0,10,0,0
-Dogs,0,0,0,10,0,0
-Cats,0,0,0,10,0,0
-Leisure,60,0,5,80,20,0
-Travel,40,0,10,100,30,0
-Camping,20,0,10,40,20,0
-Fishing,10,0,0,20,10,0
-Finance,30,0,0,40,30,0
-Stock,30,0,0,40,30,0
-Real estate,20,0,0,30,20,0
-Shopping,100,0,5,60,40,0
-Beauty,30,0,0,20,20,0
-Food,60,0,10,100,40,0
-Auto and Vehicles,40,0,0,30,30,0
-Education,30,0,0,40,20,0
-Childcare,0,0,0,0,0,0
-Social,120,0,0,80,40,0
-Art and Culture,20,0,5,30,20,0
-Nature,30,0,5,40,20,0
-Others,100,20,10,200,80,0
+private fun zeroInflatedLogNormal(value: Double, p0: Double, median: Double, p90: Double): Double {
+    fun erf(x: Double): Double {
+        // Abramowitz–Stegun 7.1.26
+        val a1 = 0.254829592; val a2 = -0.284496736; val a3 = 1.421413741
+        val a4 = -1.453152027; val a5 = 1.061405429; val p = 0.3275911
+        val sign = if (x < 0) -1.0 else 1.0
+        val ax = kotlin.math.abs(x)
+        val t = 1.0 / (1.0 + p * ax)
+        val y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * kotlin.math.exp(-ax * ax)
+        return sign * y
+    }
+    fun stdNormCdf(x: Double): Double = 0.5 * (1.0 + erf(x / kotlin.math.sqrt(2.0)))
+
+    if (value.isNaN() || p0.isNaN() || median.isNaN() || p90.isNaN()) return Double.NaN
+    val pp0 = p0.coerceIn(0.0, 0.999999999999) // avoid 1.0 exact
+    if (value < 0.0) return 0.0
+    if (value == 0.0) return (pp0 * 0.5).coerceIn(0.0, 1.0)
+
+    val safeMedian = kotlin.math.max(median, 1e-12)
+    val z90 = 1.2815515655446004
+    val mu = kotlin.math.ln(safeMedian)
+
+    val safeP90 = kotlin.math.max(p90, safeMedian * (1.0 + 1e-12))
+    val sigma = kotlin.math.max((kotlin.math.ln(safeP90) - mu) / z90, 1e-9)
+
+    val cdfLN = stdNormCdf((kotlin.math.ln(value) - mu) / sigma)
+    val pct = pp0 + (1.0 - pp0) * cdfLN
+    return pct.coerceIn(0.0, 1.0)
+}
