@@ -2,82 +2,77 @@ data class Interest(val topic: String, val v1: Double, val v2: Double)
 
 class ScorePyramidFragment : Fragment() {
 
-    private val score1: Map<String, Double> = mapOf(/* topic to v1 */)
-    private val score2: Map<String, Double> = mapOf(/* topic to v2 */)
+    // TODO: 실제 소스에서 채워 넣으세요.
+    private fun scoreV1(): Map<String, Double> = mapOf("music" to 0.84, "game" to 0.73, "soccer" to 0.41)
+    private fun scoreV2(): Map<String, Double> = mapOf("music" to 3.2,  "game" to 1.1,  "soccer" to 2.0)
 
-    override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
-    ): View {
-        val tv = TextView(requireContext()).apply {
-            typeface = Typeface.MONOSPACE
-            textSize = 13f
+    override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View {
+        val root = LinearLayout(requireContext()).apply { orientation = LinearLayout.VERTICAL }
+        val btn = Button(requireContext()).apply { text = "Execute" }
+        val tv  = TextView(requireContext()).apply {
+            typeface = Typeface.MONOSPACE; textSize = 13f
             setPadding(24, 24, 24, 24)
         }
-        val root = FrameLayout(requireContext()).apply { addView(tv) }
+        root.addView(btn); root.addView(ScrollView(requireContext()).apply { addView(tv) })
 
-        // 레이아웃 폭이 정해진 뒤에 문자열 생성
-        tv.post {
-            val records = score1.entries
-                .map { (t, v) -> Interest(t, v, score2[t] ?: 0.0) }
-                .sortedByDescending { it.v1 }
-
-            tv.text = buildPyramidString(
-                textWidthPx = tv.width - tv.paddingLeft - tv.paddingRight,
-                paint = tv.paint,
-                records = records
-            )
+        fun render() {
+            // width 확정 뒤 렌더
+            tv.post {
+                val r1 = scoreV1(); val r2 = scoreV2()
+                val rows = r1.entries.map { (t, v) -> Interest(t, v, r2[t] ?: 0.0) }
+                    .sortedByDescending { it.v1 }
+                tv.text = buildPyramidString(tv.width - tv.paddingLeft - tv.paddingRight, tv.paint, rows)
+            }
         }
+        btn.setOnClickListener { render() }
         return root
     }
 }
 
-/** 인구 피라미드 스타일 문자열 생성 */
+/** 인구피라미드 스타일 문자열(좌: v1, 우: v2). 좌우 독립 스케일, 바 양끝 숫자 표시 */
 fun buildPyramidString(
     textWidthPx: Int,
     paint: TextPaint,
     records: List<Interest>,
-    sep: String = " │ "
+    sep: String = " │ ",
+    leftChar: Char = '█',     // tqdm 느낌의 블록
+    rightChar: Char = '█',
+    numCols: Int = 6          // 바 양끝 숫자 고정폭
 ): String {
-    // 한 글자 폭(모노스페이스 전제)
     val charW = paint.measureText("M").coerceAtLeast(1f)
-    val totalCols = (textWidthPx / charW).toInt().coerceAtLeast(40)
+    val totalCols = (textWidthPx / charW).toInt().coerceAtLeast(48)
 
-    // 헤더/분할: [leftBars] + sep + [topic] + sep + [rightBars]
-    val topicCols = minOf(
-        maxOf(records.maxOfOrNull { it.topic.length } ?: 8, 8),
-        24
-    )
-    val sepCols = (sep.length * 2)
-    val sideCols = ((totalCols - topicCols - sepCols).coerceAtLeast(10)) / 2
-    val leftCols = sideCols
-    val rightCols = sideCols
+    val topicCols = minOf(maxOf(records.maxOfOrNull { it.topic.length } ?: 8, 8), 24)
+    val sepCols = sep.length * 2
+    val sideCols = ((totalCols - topicCols - sepCols - (numCols * 2)).coerceAtLeast(10)) / 2
+    val leftCols = sideCols; val rightCols = sideCols
 
-    // 스케일(좌우 독립)
     val maxL = records.maxOfOrNull { it.v1 }?.takeIf { it > 0 } ?: 1.0
     val maxR = records.maxOfOrNull { it.v2 }?.takeIf { it > 0 } ?: 1.0
 
-    fun barLeft(v: Double): String {
+    fun f(v: Double) = "%.${if (v < 10) 2 else 1}f".format(Locale.US, v)
+    fun tFit(t: String) = if (t.length <= topicCols) t.padEnd(topicCols) else t.take(topicCols - 1) + "…"
+
+    fun leftBar(v: Double): String {
         val len = (v / maxL * leftCols).roundToInt().coerceIn(0, leftCols)
-        // 중앙 정렬(오른쪽 끝 맞춤)
-        return " ".repeat(leftCols - len) + "=".repeat(len)
+        val num = f(v).padStart(numCols)
+        return num + " " + " ".repeat(leftCols - len) + leftChar.toString().repeat(len)
     }
-    fun barRight(v: Double): String {
+    fun rightBar(v: Double): String {
         val len = (v / maxR * rightCols).roundToInt().coerceIn(0, rightCols)
-        // 중앙에서 오른쪽으로
-        return "-".repeat(len) + " ".repeat(rightCols - len)
+        val num = f(v).padEnd(numCols)
+        return rightChar.toString().repeat(len) + " ".repeat(rightCols - len) + " " + num
     }
-    fun fitTopic(t: String): String =
-        if (t.length <= topicCols) t.padEnd(topicCols)
-        else t.take(topicCols - 1) + "…"
 
     return buildString {
         appendLine("======== score ========")
         appendLine(
-            " ".repeat(leftCols - 2) + "v1" +
-            sep + "topic".padEnd(topicCols) + sep + "v2"
+            " ".repeat(numCols - 2) + "v1" + " ".repeat(leftCols + 1) + sep +
+            "topic".padEnd(topicCols) + sep +
+            " ".repeat(rightCols + 1) + "v2"
         )
         records.forEach { r ->
-            appendLine("${barLeft(r.v1)}$sep${fitTopic(r.topic)}$sep${barRight(r.v2)}")
+            appendLine("${leftBar(r.v1)}$sep${tFit(r.topic)}$sep${rightBar(r.v2)}")
         }
     }
 }
