@@ -1,83 +1,120 @@
-# 9월 8일 (월)
-app_usage,Music,1757299200000,1757301000000,30
-web,News,1757306400000,1757307000000,10
-youtube,Game,1757310600000,1757311800000,20
-app_usage,Finance,1757316000000,1757317200000,20
-web,Shopping,1757324400000,1757325000000,10
-youtube,Music,1757328000000,1757329800000,30
-app_usage,Food,1757333400000,1757334600000,20
-web,Soccer,1757340000000,1757340600000,10
-youtube,Celebrity,1757347200000,1757348400000,20
-app_usage,Social,1757352600000,1757353800000,20
+import 'package:flutter/material.dart';
 
-# 9월 9일 (화)
-app_usage,Music,1757385600000,1757387400000,30
-web,News,1757392800000,1757393400000,10
-youtube,Game,1757397000000,1757398200000,20
-app_usage,Finance,1757402400000,1757403600000,20
-web,Shopping,1757410800000,1757411400000,10
-youtube,Music,1757414400000,1757416200000,30
-app_usage,Food,1757419800000,1757421000000,20
-web,Soccer,1757426400000,1757427000000,10
-youtube,Celebrity,1757433600000,1757434800000,20
-app_usage,Social,1757439000000,1757440200000,20
+/// source: "a" | "b" | "c" | "d" 처럼 사용
+/// mapper: url -> 출처명 매핑 (예: {"https://..": "YouTube"})
+Widget buildTwoLineTextBlock(
+  BuildContext context, {
+  required String source,
+  required String title,
+  required String url,
+  required Map<String, List<String>> tags,
+  Map<String, String>? mapper,
+  bool emphasizeFirstLine = false, // 첫 줄 굵기 조절 옵션
+}) {
+  final theme = Theme.of(context);
+  final baseStyle = theme.textTheme.bodySmall ?? const TextStyle(fontSize: 12);
 
-# 9월 10일 (수)
-app_usage,Music,1757472000000,1757473800000,30
-web,News,1757479200000,1757479800000,10
-youtube,Game,1757483400000,1757484600000,20
-app_usage,Finance,1757488800000,1757490000000,20
-web,Shopping,1757497200000,1757497800000,10
-youtube,Music,1757500800000,1757502600000,30
-app_usage,Food,1757506200000,1757507400000,20
-web,Soccer,1757512800000,1757513400000,10
-youtube,Celebrity,1757520000000,1757521200000,20
-app_usage,Social,1757525400000,1757526600000,20
+  // 1) contents 라인 만들기
+  final isABC = source == 'a' || source == 'b' || source == 'c';
+  String contents = isABC ? 'contents : $title' : 'contents : $url';
 
-# 9월 11일 (목)
-app_usage,Music,1757558400000,1757560200000,30
-web,News,1757565600000,1757566200000,10
-youtube,Game,1757569800000,1757571000000,20
-app_usage,Finance,1757575200000,1757576400000,20
-web,Shopping,1757583600000,1757584200000,10
-youtube,Music,1757587200000,1757589000000,30
-app_usage,Food,1757592600000,1757593800000,20
-web,Soccer,1757599200000,1757599800000,10
-youtube,Celebrity,1757606400000,1757607600000,20
-app_usage,Social,1757611800000,1757613000000,20
+  final hasFrom = (source == 'd') && (mapper != null) && mapper.containsKey(url);
+  final firstLineStyle = emphasizeFirstLine
+      ? baseStyle.copyWith(fontWeight: FontWeight.w600)
+      : baseStyle;
 
-# 9월 12일 (금)
-app_usage,Music,1757644800000,1757646600000,30
-web,News,1757652000000,1757652600000,10
-youtube,Game,1757656200000,1757657400000,20
-app_usage,Finance,1757661600000,1757662800000,20
-web,Shopping,1757670000000,1757670600000,10
-youtube,Music,1757673600000,1757675400000,30
-app_usage,Food,1757679000000,1757680200000,20
-web,Soccer,1757685600000,1757686200000,10
-youtube,Celebrity,1757692800000,1757694000000,20
-app_usage,Social,1757698200000,1757699400000,20
+  final fromStyle = baseStyle.copyWith(
+    fontStyle: FontStyle.italic,
+    color: theme.colorScheme.secondary,
+  );
 
-# 9월 13일 (토, 주말)
-app_usage,Travel,1757731200000,1757733000000,30
-web,Food,1757738400000,1757739000000,10
-youtube,Movie,1757742600000,1757743800000,20
-app_usage,Leisure,1757748000000,1757749800000,30
-web,Basketball,1757756400000,1757757000000,10
-youtube,Music,1757760000000,1757761800000,30
-app_usage,Shopping,1757765400000,1757767200000,30
-web,Celebrity,1757772000000,1757772600000,10
-youtube,Travel,1757779200000,1757780400000,20
-app_usage,Social,1757784600000,1757786400000,30
+  final firstLine = Text.rich(
+    TextSpan(
+      text: contents,
+      style: firstLineStyle,
+      children: hasFrom
+          ? [
+              const TextSpan(text: '  '),
+              TextSpan(text: 'from ${mapper![url]}', style: fromStyle),
+            ]
+          : const [],
+    ),
+    maxLines: 2,
+    overflow: TextOverflow.ellipsis,
+  );
 
-# 9월 14일 (일, 주말)
-app_usage,Travel,1757817600000,1757819400000,30
-web,Food,1757824800000,1757825400000,10
-youtube,Movie,1757829000000,1757830200000,20
-app_usage,Leisure,1757834400000,1757836200000,30
-web,Soccer,1757842800000,1757843400000,10
-youtube,Music,1757846400000,1757848200000,30
-app_usage,Shopping,1757851800000,1757853600000,30
-web,Celebrity,1757858400000,1757859000000,10
-youtube,Travel,1757865600000,1757866800000,20
-app_usage,Social,1757871000000,1757872800000,30
+  // 2) tagsstr (dict -> str)
+  // key: v1, v2\n 형태
+  final String tagsStr = tags.entries.map((e) {
+    final values = (e.value..removeWhere((s) => s.trim().isEmpty)).join(', ');
+    return '${e.key} : $values';
+  }).join('\n');
+
+  // 태그 없으면 비활성화 표시
+  final bool hasTags = tagsStr.trim().isNotEmpty;
+
+  // ExpansionTile은 기본적으로 오른쪽에 아래/위 화살표가 있습니다.
+  // 타이틀을 "Tags"로 두고, 펼치면 전체 문자열 보여줌.
+  final secondLine = Theme(
+    // ExpansionTile의 기본 패딩을 줄여 두 줄 레이아웃에 맞춥니다.
+    data: theme.copyWith(dividerColor: Colors.transparent),
+    child: ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(left: 8.0, right: 8.0, bottom: 4.0),
+      initiallyExpanded: false,
+      dense: true,
+      maintainState: true,
+      title: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Tags',
+            style: baseStyle.copyWith(
+              fontWeight: FontWeight.w600,
+              color: hasTags
+                  ? theme.colorScheme.onSurface
+                  : theme.disabledColor,
+            ),
+          ),
+          // 기본 화살표가 오른쪽에 있지만, 텍스트 옆에도 힌트 아이콘을 하나 둡니다.
+          const SizedBox(width: 6),
+          Icon(Icons.keyboard_arrow_down,
+              size: 18, color: hasTags ? null : theme.disabledColor),
+        ],
+      ),
+      children: hasTags
+          ? [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  tagsStr,
+                  style: baseStyle.copyWith(height: 1.2),
+                ),
+              ),
+            ]
+          : [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '(no tags)',
+                  style: baseStyle.copyWith(
+                    color: theme.disabledColor,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ),
+            ],
+    ),
+  );
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      firstLine,
+      // 살짝 간격
+      const SizedBox(height: 2),
+      secondLine,
+    ],
+  );
+}
