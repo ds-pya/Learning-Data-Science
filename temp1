@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 
-/// source: "a" | "b" | "c" | "d" 처럼 사용
-/// mapper: url -> 출처명 매핑 (예: {"https://..": "YouTube"})
 Widget buildTwoLineTextBlock(
   BuildContext context, {
   required String source,
@@ -9,16 +7,16 @@ Widget buildTwoLineTextBlock(
   required String url,
   required Map<String, List<String>> tags,
   Map<String, String>? mapper,
-  bool emphasizeFirstLine = false, // 첫 줄 굵기 조절 옵션
+  bool emphasizeFirstLine = false,
 }) {
   final theme = Theme.of(context);
   final baseStyle = theme.textTheme.bodySmall ?? const TextStyle(fontSize: 12);
 
-  // 1) contents 라인 만들기
+  // 1) contents 라인
   final isABC = source == 'a' || source == 'b' || source == 'c';
   String contents = isABC ? 'contents : $title' : 'contents : $url';
-
   final hasFrom = (source == 'd') && (mapper != null) && mapper.containsKey(url);
+
   final firstLineStyle = emphasizeFirstLine
       ? baseStyle.copyWith(fontWeight: FontWeight.w600)
       : baseStyle;
@@ -43,68 +41,89 @@ Widget buildTwoLineTextBlock(
     overflow: TextOverflow.ellipsis,
   );
 
-  // 2) tagsstr (dict -> str)
-  // key: v1, v2\n 형태
+  // 2) tags 문자열
   final String tagsStr = tags.entries.map((e) {
-    final values = (e.value..removeWhere((s) => s.trim().isEmpty)).join(', ');
+    final values =
+        e.value.where((s) => s.trim().isNotEmpty).join(', ');
     return '${e.key} : $values';
-  }).join('\n');
+  }).where((line) => !line.trim().endsWith(':')) // 값 비어있는 key 제거
+    .join('\n');
 
-  // 태그 없으면 비활성화 표시
   final bool hasTags = tagsStr.trim().isNotEmpty;
 
-  // ExpansionTile은 기본적으로 오른쪽에 아래/위 화살표가 있습니다.
-  // 타이틀을 "Tags"로 두고, 펼치면 전체 문자열 보여줌.
-  final secondLine = Theme(
-    // ExpansionTile의 기본 패딩을 줄여 두 줄 레이아웃에 맞춥니다.
-    data: theme.copyWith(dividerColor: Colors.transparent),
-    child: ExpansionTile(
-      tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsets.only(left: 8.0, right: 8.0, bottom: 4.0),
-      initiallyExpanded: false,
-      dense: true,
-      maintainState: true,
-      title: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            'Tags',
-            style: baseStyle.copyWith(
-              fontWeight: FontWeight.w600,
-              color: hasTags
-                  ? theme.colorScheme.onSurface
-                  : theme.disabledColor,
-            ),
+  // 태그 없으면 두 번째 줄 아예 생략
+  if (!hasTags) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        firstLine,
+      ],
+    );
+  }
+
+  // 커스텀 화살표(오른쪽 기본 화살표 제거하고, Tags 옆에 배치)
+  var expanded = false;
+
+  final secondLine = StatefulBuilder(
+    builder: (context, setState) {
+      return ListTileTheme(
+        dense: true,
+        minVerticalPadding: 0,
+        contentPadding: EdgeInsets.zero,
+        horizontalTitleGap: 0,
+        child: Theme(
+          data: theme.copyWith(
+            dividerColor: Colors.transparent,
+            // 접힌 상태/펼친 상태 텍스트 색상 유지
+            textTheme: theme.textTheme,
           ),
-          // 기본 화살표가 오른쪽에 있지만, 텍스트 옆에도 힌트 아이콘을 하나 둡니다.
-          const SizedBox(width: 6),
-          Icon(Icons.keyboard_arrow_down,
-              size: 18, color: hasTags ? null : theme.disabledColor),
-        ],
-      ),
-      children: hasTags
-          ? [
+          child: ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            childrenPadding:
+                const EdgeInsets.only(left: 0, right: 0, bottom: 2),
+            trailing: const SizedBox.shrink(), // 기본 오른쪽 화살표 제거
+            initiallyExpanded: false,
+            maintainState: true,
+            onExpansionChanged: (v) => setState(() => expanded = v),
+            // 접힌 라인 높이 압축
+            collapsedShape: const RoundedRectangleBorder(side: BorderSide.none),
+            shape: const RoundedRectangleBorder(side: BorderSide.none),
+            title: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Tags',
+                  style: baseStyle.copyWith(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(width: 4),
+                AnimatedRotation(
+                  turns: expanded ? 0.5 : 0.0, // ↓(0) -> ↑(0.5)
+                  duration: const Duration(milliseconds: 150),
+                  child: Icon(
+                    Icons.keyboard_arrow_down,
+                    size: 16,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+              ],
+            ),
+            // 펼친 컨텐츠 줄간격 살짝 증가
+            children: [
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
                   tagsStr,
-                  style: baseStyle.copyWith(height: 1.2),
-                ),
-              ),
-            ]
-          : [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '(no tags)',
-                  style: baseStyle.copyWith(
-                    color: theme.disabledColor,
-                    fontStyle: FontStyle.italic,
-                  ),
+                  style: baseStyle.copyWith(height: 1.35),
                 ),
               ),
             ],
-    ),
+            // 시각 밀도 낮춰서 높이 더 줄임
+            expandedCrossAxisAlignment: CrossAxisAlignment.start,
+          ),
+        ),
+      );
+    },
   );
 
   return Column(
@@ -112,8 +131,8 @@ Widget buildTwoLineTextBlock(
     mainAxisSize: MainAxisSize.min,
     children: [
       firstLine,
-      // 살짝 간격
       const SizedBox(height: 2),
+      // 접힌 줄의 세로 여백을 더 줄이려면 SizedBox 높이도 최소화
       secondLine,
     ],
   );
