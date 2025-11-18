@@ -1,139 +1,196 @@
 import 'package:flutter/material.dart';
+import 'calbak_page.dart'; // 새로 만들 파일이라고 가정
 
-Widget buildTwoLineTextBlock(
-  BuildContext context, {
-  required String source,
-  required String title,
-  required String url,
-  required Map<String, List<String>> tags,
-  Map<String, String>? mapper,
-  bool emphasizeFirstLine = false,
-}) {
-  final theme = Theme.of(context);
-  final baseStyle = theme.textTheme.bodySmall ?? const TextStyle(fontSize: 12);
+class HomePage extends StatelessWidget {
+  const HomePage({super.key});
 
-  // 1) contents 라인
-  final isABC = source == 'a' || source == 'b' || source == 'c';
-  String contents = isABC ? 'contents : $title' : 'contents : $url';
-  final hasFrom = (source == 'd') && (mapper != null) && mapper.containsKey(url);
-
-  final firstLineStyle = emphasizeFirstLine
-      ? baseStyle.copyWith(fontWeight: FontWeight.w600)
-      : baseStyle;
-
-  final fromStyle = baseStyle.copyWith(
-    fontStyle: FontStyle.italic,
-    color: theme.colorScheme.secondary,
-  );
-
-  final firstLine = Text.rich(
-    TextSpan(
-      text: contents,
-      style: firstLineStyle,
-      children: hasFrom
-          ? [
-              const TextSpan(text: '  '),
-              TextSpan(text: 'from ${mapper![url]}', style: fromStyle),
-            ]
-          : const [],
-    ),
-    maxLines: 2,
-    overflow: TextOverflow.ellipsis,
-  );
-
-  // 2) tags 문자열
-  final String tagsStr = tags.entries.map((e) {
-    final values =
-        e.value.where((s) => s.trim().isNotEmpty).join(', ');
-    return '${e.key} : $values';
-  }).where((line) => !line.trim().endsWith(':')) // 값 비어있는 key 제거
-    .join('\n');
-
-  final bool hasTags = tagsStr.trim().isNotEmpty;
-
-  // 태그 없으면 두 번째 줄 아예 생략
-  if (!hasTags) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        firstLine,
-      ],
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('기존 앱'),
+      ),
+      body: Center(
+        child: ElevatedButton(
+          onPressed: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const CalBakPage(),
+              ),
+            );
+          },
+          child: const Text('캘린더 박제 (캘박)'),
+        ),
+      ),
     );
   }
+}
 
-  // 커스텀 화살표(오른쪽 기본 화살표 제거하고, Tags 옆에 배치)
-  var expanded = false;
+import 'dart:io';
 
-  final secondLine = StatefulBuilder(
-    builder: (context, setState) {
-      return ListTileTheme(
-        dense: true,
-        minVerticalPadding: 0,
-        contentPadding: EdgeInsets.zero,
-        horizontalTitleGap: 0,
-        child: Theme(
-          data: theme.copyWith(
-            dividerColor: Colors.transparent,
-            // 접힌 상태/펼친 상태 텍스트 색상 유지
-            textTheme: theme.textTheme,
-          ),
-          child: ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            childrenPadding:
-                const EdgeInsets.only(left: 0, right: 0, bottom: 2),
-            trailing: const SizedBox.shrink(), // 기본 오른쪽 화살표 제거
-            initiallyExpanded: false,
-            maintainState: true,
-            onExpansionChanged: (v) => setState(() => expanded = v),
-            // 접힌 라인 높이 압축
-            collapsedShape: const RoundedRectangleBorder(side: BorderSide.none),
-            shape: const RoundedRectangleBorder(side: BorderSide.none),
-            title: Row(
-              mainAxisSize: MainAxisSize.min,
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:google_ml_kit/google_ml_kit.dart';
+
+class CalBakPage extends StatefulWidget {
+  const CalBakPage({super.key});
+
+  @override
+  State<CalBakPage> createState() => _CalBakPageState();
+}
+
+class _CalBakPageState extends State<CalBakPage> {
+  File? _selectedImage;
+  String _ocrText = '';
+  bool _isProcessing = false;
+
+  final ImagePicker _picker = ImagePicker();
+  final TextRecognizer _textRecognizer =
+      TextRecognizer(script: TextRecognitionScript.latin); // v2 온디바이스
+
+  @override
+  void dispose() {
+    _textRecognizer.close();
+    super.dispose();
+  }
+
+  Future<void> _pickImage() async {
+    try {
+      final XFile? picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+        // source: ImageSource.camera, // 필요하면 카메라도 추가 가능
+        maxWidth: 2000,
+      );
+
+      if (picked == null) return;
+
+      setState(() {
+        _selectedImage = File(picked.path);
+        _ocrText = '';
+      });
+
+      await _runOcr(File(picked.path));
+    } catch (e) {
+      debugPrint('Image pick error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('이미지를 불러오는 중 오류가 발생했습니다.')),
+      );
+    }
+  }
+
+  Future<void> _runOcr(File imageFile) async {
+    setState(() {
+      _isProcessing = true;
+      _ocrText = '';
+    });
+
+    try {
+      final inputImage = InputImage.fromFile(imageFile);
+      final RecognizedText recognizedText =
+          await _textRecognizer.processImage(inputImage);
+
+      setState(() {
+        _ocrText = recognizedText.text;
+      });
+    } catch (e) {
+      debugPrint('OCR error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('텍스트 인식 중 오류가 발생했습니다.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('캘박 - 캘린더 박제'),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: ListView(
+          children: [
+            // 1. 이미지 선택 영역
+            const Text(
+              '1. 이미지 선택 / 입력 (OCR 대상)',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Tags',
-                  style: baseStyle.copyWith(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(width: 4),
-                AnimatedRotation(
-                  turns: expanded ? 0.5 : 0.0, // ↓(0) -> ↑(0.5)
-                  duration: const Duration(milliseconds: 150),
-                  child: Icon(
-                    Icons.keyboard_arrow_down,
-                    size: 16,
-                    color: theme.colorScheme.onSurface,
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _isProcessing ? null : _pickImage,
+                    child: const Text('갤러리에서 이미지 선택'),
                   ),
                 ),
               ],
             ),
-            // 펼친 컨텐츠 줄간격 살짝 증가
-            children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  tagsStr,
-                  style: baseStyle.copyWith(height: 1.35),
+            const SizedBox(height: 12),
+            if (_selectedImage != null)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.file(
+                  _selectedImage!,
+                  height: 180,
+                  fit: BoxFit.cover,
                 ),
               ),
-            ],
-            // 시각 밀도 낮춰서 높이 더 줄임
-            expandedCrossAxisAlignment: CrossAxisAlignment.start,
-          ),
-        ),
-      );
-    },
-  );
+            const Divider(height: 32),
 
-  return Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      firstLine,
-      const SizedBox(height: 2),
-      // 접힌 줄의 세로 여백을 더 줄이려면 SizedBox 높이도 최소화
-      secondLine,
-    ],
-  );
+            // 2. OCR 결과 영역
+            const Text(
+              '2. OCR 결과 (ML Kit Text Recognition v2)',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              height: 160,
+              child: _isProcessing
+                  ? const Center(child: CircularProgressIndicator())
+                  : SingleChildScrollView(
+                      child: Text(
+                        _ocrText.isEmpty
+                            ? '이미지를 선택하면 인식된 텍스트가 여기 표시됩니다.'
+                            : _ocrText,
+                      ),
+                    ),
+            ),
+            const Divider(height: 32),
+
+            // 3. 이후 단계 자리 (멀티모달 분류 / NER / 랭킹)
+            const Text(
+              '3. 멀티모달 분류 / NER / 랭킹 결과 (추후 구현)',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: ListTile(
+                title: const Text('추천 일정 예시 (placeholder)'),
+                subtitle: const Text('OCR + 모델 연동 후 실제 값으로 대체 예정'),
+                trailing: ElevatedButton(
+                  onPressed: () {
+                    // TODO: 캘린더에 저장 로직
+                  },
+                  child: const Text('캘린더 추가'),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
