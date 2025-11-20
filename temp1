@@ -1,8 +1,9 @@
-package <your-package>.llm
+package your.package.llm
 
 import android.content.Context
 import android.util.Log
-import com.google.mediapipe.tasks.genai.text.textgenerator.TextGenerator
+import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -13,49 +14,50 @@ class GemmaLlmRunner(private val context: Context) {
         private const val MODEL_PATH = "models/gemma-3-1b-it-int4.task"
     }
 
-    private var generator: TextGenerator? = null
+    private var llm: LlmInference? = null
 
     /**
-     * Runner 초기화 - 앱 시작 시 1번만 호출
+     * 앱 시작 시 1번만 호출
      */
     fun init() {
-        if (generator != null) return  // 이미 초기화됨
+        if (llm != null) return
 
         try {
-            generator = TextGenerator.createFromFile(
-                context,
-                MODEL_PATH
-            )
-            Log.d(TAG, "Gemma LLM initialized successfully")
+            val options = LlmInferenceOptions.builder()
+                .setModelPath(MODEL_PATH)
+                .build()
+
+            llm = LlmInference.createFromOptions(context, options)
+            Log.d(TAG, "Gemma LLM (LlmInference) initialized")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize Gemma LLM", e)
         }
     }
 
     /**
-     * LLM 추론 (UI 스레드에서 호출 금지)
+     * LLM 추론
+     * - UI 스레드에서 직접 호출하지 말고 코루틴 등에서 사용 권장
      */
     suspend fun generate(prompt: String): String? {
-        val gen = generator ?: return null
+        val instance = llm ?: return null
 
         return withContext(Dispatchers.Default) {
             try {
-                val result = gen.generate(prompt)
-                result.text
+                // 단순 1회성 완성 (스트리밍 X)
+                val response = instance.generateResponse(prompt)
+                // response.text 또는 choices[0].text 등, 실제 API에 맞게 선택
+                response.text
             } catch (e: Exception) {
-                Log.e(TAG, "LLM generate() error", e)
+                Log.e(TAG, "generate() error", e)
                 null
             }
         }
     }
 
-    /**
-     * 앱 종료 시 또는 필요 시
-     */
     fun close() {
         try {
-            generator?.close()
-            generator = null
+            llm?.close()
+            llm = null
             Log.d(TAG, "Gemma LLM closed")
         } catch (e: Exception) {
             Log.e(TAG, "Error closing Gemma LLM", e)
