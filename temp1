@@ -1,45 +1,64 @@
-// android/app/src/main/kotlin/.../MyAssistSession.kt
-package com.yourpackage
+package <your-package>.llm
 
-import android.graphics.Bitmap
-import android.os.Bundle
-import android.service.voice.VoiceInteractionSession
-import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodChannel
+import android.content.Context
+import android.util.Log
+import com.google.mediapipe.tasks.genai.text.textgenerator.TextGenerator
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-class MyAssistSession(context: Context) : VoiceInteractionSession(context) {
+class GemmaLlmRunner(private val context: Context) {
 
-    override fun onCreate() {
-        super.onCreate()
-        // 세션 초기화 로직 (필요시)
+    companion object {
+        private const val TAG = "GemmaLlmRunner"
+        private const val MODEL_PATH = "models/gemma-3-1b-it-int4.task"
     }
 
-    override fun onHandleScreenshot(screenshot: Bitmap?) {
-        super.onHandleScreenshot(screenshot)
+    private var generator: TextGenerator? = null
 
-        if (screenshot == null) return
+    /**
+     * Runner 초기화 - 앱 시작 시 1번만 호출
+     */
+    fun init() {
+        if (generator != null) return  // 이미 초기화됨
 
-        // 1) Bitmap → 파일 or byte[] 로 저장
-        val path = saveScreenshotToCache(screenshot)
-
-        // 2) Flutter 쪽으로 알림
-        sendScreenshotToFlutter(path)
-
-        // 3) 필요하면 여기서 바로 UI 띄워도 됨 (setContentView 등)
+        try {
+            generator = TextGenerator.createFromFile(
+                context,
+                MODEL_PATH
+            )
+            Log.d(TAG, "Gemma LLM initialized successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize Gemma LLM", e)
+        }
     }
 
-    private fun saveScreenshotToCache(bitmap: Bitmap): String {
-        // cache 디렉토리에 PNG로 저장하고 파일 경로를 리턴 (구현은 생략)
-        return "/path/to/file.png"
+    /**
+     * LLM 추론 (UI 스레드에서 호출 금지)
+     */
+    suspend fun generate(prompt: String): String? {
+        val gen = generator ?: return null
+
+        return withContext(Dispatchers.Default) {
+            try {
+                val result = gen.generate(prompt)
+                result.text
+            } catch (e: Exception) {
+                Log.e(TAG, "LLM generate() error", e)
+                null
+            }
+        }
     }
 
-    private fun sendScreenshotToFlutter(path: String) {
-        // FlutterEngine 접근 방식은 프로젝트 구조에 따라 달라짐
-        val engine: FlutterEngine = MyFlutterHolder.engine
-        val channel = MethodChannel(
-            engine.dartExecutor.binaryMessenger,
-            "assistant_channel"
-        )
-        channel.invokeMethod("onScreenshot", path)
+    /**
+     * 앱 종료 시 또는 필요 시
+     */
+    fun close() {
+        try {
+            generator?.close()
+            generator = null
+            Log.d(TAG, "Gemma LLM closed")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing Gemma LLM", e)
+        }
     }
 }
