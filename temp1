@@ -1,66 +1,33 @@
-package your.package.llm
+class CalbakLlmResultParser {
+  static final _specialChars = RegExp(r'["\'{}\n\t`]+');
 
-import android.content.Context
-import android.util.Log
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
-import com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+  /// raw: LLM이 뱉은 한 줄
+  /// label: 'title' 또는 'location'
+  ///
+  /// 예)
+  /// title: "홍길동 결혼식"      → 홍길동 결혼식
+  /// location: 강남 웨딩홀        → 강남 웨딩홀
+  /// "title"::{'삼성동 코엑스'}   → 삼성동 코엑스
+  static String? parseSimpleLabel(String raw, String label) {
+    if (raw.trim().isEmpty) return null;
 
-class GemmaLlmRunner(private val context: Context) {
+    // 1) 특수문자 제거
+    var t = raw.replaceAll(_specialChars, '').trim();
 
-    companion object {
-        private const val TAG = "GemmaLlmRunner"
-        private const val MODEL_PATH = "models/gemma-3-1b-it-int4.task"
+    // 2) 라벨 위치 찾기
+    final idx = t.toLowerCase().indexOf(label.toLowerCase());
+    if (idx == -1) {
+      // 라벨 없으면 전체 문자열 반환
+      return t.isEmpty ? null : t;
     }
 
-    private var llm: LlmInference? = null
+    // 3) label 뒤의 텍스트만 추출
+    // label "title" → "title" + 5글자
+    var v = t.substring(idx + label.length).trim();
 
-    /**
-     * 앱 시작 시 1번만 호출
-     */
-    fun init() {
-        if (llm != null) return
+    // 콜론 한 번 더 있다면 제거
+    if (v.startsWith(':')) v = v.substring(1).trim();
 
-        try {
-            val options = LlmInferenceOptions.builder()
-                .setModelPath(MODEL_PATH)
-                .build()
-
-            llm = LlmInference.createFromOptions(context, options)
-            Log.d(TAG, "Gemma LLM (LlmInference) initialized")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize Gemma LLM", e)
-        }
-    }
-
-    /**
-     * LLM 추론
-     * - UI 스레드에서 직접 호출하지 말고 코루틴 등에서 사용 권장
-     */
-    suspend fun generate(prompt: String): String? {
-        val instance = llm ?: return null
-
-        return withContext(Dispatchers.Default) {
-            try {
-                // 단순 1회성 완성 (스트리밍 X)
-                val response = instance.generateResponse(prompt)
-                // response.text 또는 choices[0].text 등, 실제 API에 맞게 선택
-                response.text
-            } catch (e: Exception) {
-                Log.e(TAG, "generate() error", e)
-                null
-            }
-        }
-    }
-
-    fun close() {
-        try {
-            llm?.close()
-            llm = null
-            Log.d(TAG, "Gemma LLM closed")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing Gemma LLM", e)
-        }
-    }
+    return v.isEmpty ? null : v;
+  }
 }
