@@ -1,33 +1,86 @@
-class CalbakLlmResultParser {
-  static final _specialChars = RegExp(r'["\'{}\n\t`]+');
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/assistant_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/transparent">
 
-  /// raw: LLM이 뱉은 한 줄
-  /// label: 'title' 또는 'location'
-  ///
-  /// 예)
-  /// title: "홍길동 결혼식"      → 홍길동 결혼식
-  /// location: 강남 웨딩홀        → 강남 웨딩홀
-  /// "title"::{'삼성동 코엑스'}   → 삼성동 코엑스
-  static String? parseSimpleLabel(String raw, String label) {
-    if (raw.trim().isEmpty) return null;
+    <!-- 하단 패널 -->
+    <LinearLayout
+        android:id="@+id/assistant_bottom_panel"
+        android:layout_width="match_parent"
+        android:layout_height="120dp"
+        android:layout_gravity="bottom"
+        android:orientation="horizontal"
+        android:padding="16dp"
+        android:gravity="center_vertical"
+        android:background="#CC000000">
 
-    // 1) 특수문자 제거
-    var t = raw.replaceAll(_specialChars, '').trim();
+        <!-- 앱 아이콘 버튼 -->
+        <ImageButton
+            android:id="@+id/btn_open_app"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:background="@android:color/transparent"
+            android:src="@mipmap/ic_launcher"   <!-- 기존 앱 아이콘 -->
+            android:contentDescription="앱 열기" />
 
-    // 2) 라벨 위치 찾기
-    final idx = t.toLowerCase().indexOf(label.toLowerCase());
-    if (idx == -1) {
-      // 라벨 없으면 전체 문자열 반환
-      return t.isEmpty ? null : t;
+        <!-- 간격 -->
+        <View
+            android:layout_width="24dp"
+            android:layout_height="0dp" />
+
+        <!-- 캘린더 아이콘 버튼 -->
+        <ImageButton
+            android:id="@+id/btn_calendar_scan"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_my_calendar"
+            android:contentDescription="캘린더 스캔" />
+
+    </LinearLayout>
+
+</FrameLayout>
+
+
+class CalbakAssistSession(context: Context) : VoiceInteractionSession(context) {
+
+    private var rootView: View? = null
+
+    override fun onCreateContentView(): View {
+        // 어시스턴트 UI 레이아웃 inflate
+        val view = layoutInflater.inflate(
+            R.layout.view_digital_assistant_ui,
+            null
+        )
+
+        rootView = view
+
+        // 버튼들 찾아서 클릭 리스너 연결 (일단 로그만)
+        val btnOpenApp = view.findViewById<ImageButton>(R.id.btn_open_app)
+        val btnCalendarScan = view.findViewById<ImageButton>(R.id.btn_calendar_scan)
+
+        btnOpenApp.setOnClickListener {
+            Log.d("CalbakAssistSession", "앱 아이콘 클릭")
+            // TODO: 나중에 MainActivity 열기
+        }
+
+        btnCalendarScan.setOnClickListener {
+            Log.d("CalbakAssistSession", "캘린더 아이콘 클릭")
+            // TODO: 나중에 screenshot → OCR → LLM 플로우 시작
+        }
+
+        return view
     }
 
-    // 3) label 뒤의 텍스트만 추출
-    // label "title" → "title" + 5글자
-    var v = t.substring(idx + label.length).trim();
+    override fun onShow(args: Bundle?, showFlags: Int) {
+        super.onShow(args, showFlags)
+        Log.d("CalbakAssistSession", "onShow - assistant UI 표시됨")
+    }
 
-    // 콜론 한 번 더 있다면 제거
-    if (v.startsWith(':')) v = v.substring(1).trim();
-
-    return v.isEmpty ? null : v;
-  }
+    override fun onHide() {
+        super.onHide()
+        Log.d("CalbakAssistSession", "onHide - assistant UI 숨김")
+    }
 }
