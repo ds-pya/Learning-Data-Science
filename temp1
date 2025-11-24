@@ -1,140 +1,146 @@
-<?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/assistant_root"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="@android:color/transparent">
+class CalbakAssistSession(context: Context) : VoiceInteractionSession(context) {
 
-    <!-- 1) 하단 아이콘 바 (idle) -->
-    <LinearLayout
-        android:id="@+id/panel_idle"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:layout_marginStart="16dp"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="32dp"
-        android:orientation="horizontal"
-        android:padding="16dp"
-        android:gravity="center_vertical"
-        android:background="@drawable/bg_assistant_panel"
-        android:elevation="8dp">
+    private var rootView: View? = null
 
-        <ImageButton
-            android:id="@+id/btn_open_app"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="@android:color/transparent"
-            android:src="@drawable/launcher"
-            android:contentDescription="앱 열기" />
+    private lateinit var panelIdle: View
+    private lateinit var panelLoading: View
+    private lateinit var panelEvent: View
 
-        <View
-            android:layout_width="24dp"
-            android:layout_height="0dp" />
+    private lateinit var etTitle: EditText
+    private lateinit var etLocation: EditText
+    private lateinit var etTime: EditText
 
-        <ImageButton
-            android:id="@+id/btn_calendar_scan"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="@android:color/transparent"
-            android:src="@drawable/splash"
-            android:contentDescription="캘린더 스캔" />
-    </LinearLayout>
+    private val ocrRunner = GoogleMlKitOcrRunner(context)
+    private val promptHandler = PromptHandler(context)
+    private val assistScope = CoroutineScope(Dispatchers.IO)
 
-    <!-- 2) 로딩 패널 -->
-    <LinearLayout
-        android:id="@+id/panel_loading"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:layout_margin="32dp"
-        android:orientation="horizontal"
-        android:padding="16dp"
-        android:gravity="center"
-        android:background="@drawable/bg_assistant_panel"
-        android:elevation="8dp"
-        android:visibility="gone">
+    private var lastScreenshotBitmap: Bitmap? = null
 
-        <ProgressBar
-            android:layout_width="24dp"
-            android:layout_height="24dp" />
+    override fun onCreateContentView(): View {
+        val view = layoutInflater.inflate(R.layout.view_digital_assistant_ui, null)
+        rootView = view
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:text="일정 분석 중입니다..."
-            android:textColor="@android:color/white" />
-    </LinearLayout>
+        panelIdle = view.findViewById(R.id.panel_idle)
+        panelLoading = view.findViewById(R.id.panel_loading)
+        panelEvent = view.findViewById(R.id.panel_event)
 
-    <!-- 3) 이벤트 다이얼로그 패널 -->
-    <LinearLayout
-        android:id="@+id/panel_event"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:layout_margin="16dp"
-        android:orientation="vertical"
-        android:padding="16dp"
-        android:background="@drawable/bg_assistant_panel"
-        android:elevation="8dp"
-        android:visibility="gone">
+        etTitle = view.findViewById(R.id.et_title)
+        etLocation = view.findViewById(R.id.et_location)
+        etTime = view.findViewById(R.id.et_time)
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="일정 확인"
-            android:textStyle="bold"
-            android:textColor="@android:color/white"
-            android:textSize="16sp" />
+        val btnOpenApp = view.findViewById<ImageButton>(R.id.btn_open_app)
+        val btnCalendarScan = view.findViewById<ImageButton>(R.id.btn_calendar_scan)
+        val btnCancel = view.findViewById<Button>(R.id.btn_cancel)
+        val btnSave = view.findViewById<Button>(R.id.btn_save)
 
-        <EditText
-            android:id="@+id/et_title"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="제목"
-            android:textColor="@android:color/white"
-            android:textColorHint="#80FFFFFF"
-            android:inputType="text" />
+        btnOpenApp.setOnClickListener {
+            // 이 버튼은 원할 때만 MainActivity로 이동 (있어도 되고 나중에 제거도 가능)
+            // startActivity(...) 생략 가능
+        }
 
-        <EditText
-            android:id="@+id/et_location"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="장소"
-            android:textColor="@android:color/white"
-            android:textColorHint="#80FFFFFF"
-            android:inputType="text" />
+        btnCalendarScan.setOnClickListener {
+            startCalendarFlow()
+        }
 
-        <EditText
-            android:id="@+id/et_time"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="시작 시간 (ISO8601)"
-            android:textColor="@android:color/white"
-            android:textColorHint="#80FFFFFF"
-            android:inputType="text" />
+        btnCancel.setOnClickListener {
+            // 그냥 세션 종료하거나 idle 상태로 복귀
+            finish() // 또는 showIdle()
+        }
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="end"
-            android:layout_marginTop="12dp">
+        btnSave.setOnClickListener {
+            onSaveEventClicked()
+        }
 
-            <Button
-                android:id="@+id/btn_cancel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="취소" />
+        showIdle()
+        return view
+    }
 
-            <Button
-                android:id="@+id/btn_save"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="등록"
-                android:layout_marginStart="8dp" />
-        </LinearLayout>
-    </LinearLayout>
+    override fun onHandleScreenshot(screenshot: Bitmap?) {
+        super.onHandleScreenshot(screenshot)
+        lastScreenshotBitmap = screenshot
+    }
 
-</FrameLayout>
+    private fun showIdle() {
+        panelIdle.visibility = View.VISIBLE
+        panelLoading.visibility = View.GONE
+        panelEvent.visibility = View.GONE
+    }
+
+    private fun showLoading() {
+        panelIdle.visibility = View.GONE
+        panelLoading.visibility = View.VISIBLE
+        panelEvent.visibility = View.GONE
+    }
+
+    private fun showEventPanel() {
+        panelIdle.visibility = View.GONE
+        panelLoading.visibility = View.GONE
+        panelEvent.visibility = View.VISIBLE
+    }
+
+    private fun startCalendarFlow() {
+        val bmp = lastScreenshotBitmap ?: run {
+            Log.w("Assist", "스크린샷 없음")
+            return
+        }
+
+        showLoading()
+
+        // 1) 스크린샷 저장 → Uri
+        val uri = saveScreenshotToCalbakFolder(bmp)
+        if (uri == null) {
+            Log.e("Assist", "스크린샷 저장 실패")
+            showIdle()
+            return
+        }
+
+        // 2) OCR + LLM (백그라운드)
+        assistScope.launch {
+            var lines: List<String> = emptyList()
+            val latch = CompletableDeferred<Unit>()
+
+            ocrRunner.run(uri) { l ->
+                lines = l
+                latch.complete(Unit)
+            }
+
+            latch.await()
+
+            if (lines.isEmpty()) {
+                withContext(Dispatchers.Main) {
+                    showIdle()
+                }
+                return@launch
+            }
+
+            val currentDate = CalbakDateUtil.getCurrentDateKorean()
+            val result = promptHandler.extract(lines, currentDate)
+
+            withContext(Dispatchers.Main) {
+                if (result == null) {
+                    showIdle()
+                    return@withContext
+                }
+
+                // 결과를 패널에 채우기
+                etTitle.setText(result.title ?: "")
+                etLocation.setText(result.location ?: "")
+                etTime.setText(result.timeIso ?: "") // time을 ISO 문자열로 들고 있다고 가정
+
+                showEventPanel()
+            }
+        }
+    }
+
+    private fun onSaveEventClicked() {
+        val title = etTitle.text?.toString()?.trim().takeIf { !it.isNullOrEmpty() }
+        val location = etLocation.text?.toString()?.trim().takeIf { !it.isNullOrEmpty() }
+        val timeIso = etTime.text?.toString()?.trim().takeIf { !it.isNullOrEmpty() }
+
+        // TODO: timeIso → DateTime → Calendar Provider에 Event insert
+        // 백그라운드에서 처리 후 토스트 띄우고 finish()
+
+        Toast.makeText(context, "일정 등록 (stub)", Toast.LENGTH_SHORT).show()
+        finish()
+    }
+}
