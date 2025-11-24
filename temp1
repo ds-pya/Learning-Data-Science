@@ -1,146 +1,113 @@
-class CalbakAssistSession(context: Context) : VoiceInteractionSession(context) {
+package com.samsung.android.topick.calbak
 
-    private var rootView: View? = null
+import android.content.ContentValues
+import android.content.Context
+import android.net.Uri
+import android.provider.CalendarContract
+import android.util.Log
+import java.util.TimeZone
 
-    private lateinit var panelIdle: View
-    private lateinit var panelLoading: View
-    private lateinit var panelEvent: View
+object CalbakCalendarRepository {
 
-    private lateinit var etTitle: EditText
-    private lateinit var etLocation: EditText
-    private lateinit var etTime: EditText
+    private const val TAG = "CalbakCalendarRepo"
 
-    private val ocrRunner = GoogleMlKitOcrRunner(context)
-    private val promptHandler = PromptHandler(context)
-    private val assistScope = CoroutineScope(Dispatchers.IO)
+    /**
+     * 기본 캘린더 ID 찾기
+     * - IS_PRIMARY = 1 인 캘린더 우선
+     * - 없으면 첫 번째 visible 캘린더
+     */
+    fun findDefaultCalendarId(context: Context): Long? {
+        val cr = context.contentResolver
+        val projection = arrayOf(
+            CalendarContract.Calendars._ID,
+            CalendarContract.Calendars.IS_PRIMARY,
+            CalendarContract.Calendars.VISIBLE,
+            CalendarContract.Calendars.CALENDAR_DISPLAY_NAME
+        )
 
-    private var lastScreenshotBitmap: Bitmap? = null
+        val uri = CalendarContract.Calendars.CONTENT_URI
+        val cursor = cr.query(
+            uri,
+            projection,
+            null,
+            null,
+            null
+        ) ?: return null
 
-    override fun onCreateContentView(): View {
-        val view = layoutInflater.inflate(R.layout.view_digital_assistant_ui, null)
-        rootView = view
+        var primaryId: Long? = null
+        var firstVisibleId: Long? = null
 
-        panelIdle = view.findViewById(R.id.panel_idle)
-        panelLoading = view.findViewById(R.id.panel_loading)
-        panelEvent = view.findViewById(R.id.panel_event)
+        cursor.use { c ->
+            while (c.moveToNext()) {
+                val id = c.getLong(0)
+                val isPrimary = c.getInt(1)
+                val visible = c.getInt(2)
+                val name = c.getString(3)
+                Log.d(TAG, "Found calendar: id=$id, primary=$isPrimary, visible=$visible, name=$name")
 
-        etTitle = view.findViewById(R.id.et_title)
-        etLocation = view.findViewById(R.id.et_location)
-        etTime = view.findViewById(R.id.et_time)
-
-        val btnOpenApp = view.findViewById<ImageButton>(R.id.btn_open_app)
-        val btnCalendarScan = view.findViewById<ImageButton>(R.id.btn_calendar_scan)
-        val btnCancel = view.findViewById<Button>(R.id.btn_cancel)
-        val btnSave = view.findViewById<Button>(R.id.btn_save)
-
-        btnOpenApp.setOnClickListener {
-            // 이 버튼은 원할 때만 MainActivity로 이동 (있어도 되고 나중에 제거도 가능)
-            // startActivity(...) 생략 가능
-        }
-
-        btnCalendarScan.setOnClickListener {
-            startCalendarFlow()
-        }
-
-        btnCancel.setOnClickListener {
-            // 그냥 세션 종료하거나 idle 상태로 복귀
-            finish() // 또는 showIdle()
-        }
-
-        btnSave.setOnClickListener {
-            onSaveEventClicked()
-        }
-
-        showIdle()
-        return view
-    }
-
-    override fun onHandleScreenshot(screenshot: Bitmap?) {
-        super.onHandleScreenshot(screenshot)
-        lastScreenshotBitmap = screenshot
-    }
-
-    private fun showIdle() {
-        panelIdle.visibility = View.VISIBLE
-        panelLoading.visibility = View.GONE
-        panelEvent.visibility = View.GONE
-    }
-
-    private fun showLoading() {
-        panelIdle.visibility = View.GONE
-        panelLoading.visibility = View.VISIBLE
-        panelEvent.visibility = View.GONE
-    }
-
-    private fun showEventPanel() {
-        panelIdle.visibility = View.GONE
-        panelLoading.visibility = View.GONE
-        panelEvent.visibility = View.VISIBLE
-    }
-
-    private fun startCalendarFlow() {
-        val bmp = lastScreenshotBitmap ?: run {
-            Log.w("Assist", "스크린샷 없음")
-            return
-        }
-
-        showLoading()
-
-        // 1) 스크린샷 저장 → Uri
-        val uri = saveScreenshotToCalbakFolder(bmp)
-        if (uri == null) {
-            Log.e("Assist", "스크린샷 저장 실패")
-            showIdle()
-            return
-        }
-
-        // 2) OCR + LLM (백그라운드)
-        assistScope.launch {
-            var lines: List<String> = emptyList()
-            val latch = CompletableDeferred<Unit>()
-
-            ocrRunner.run(uri) { l ->
-                lines = l
-                latch.complete(Unit)
-            }
-
-            latch.await()
-
-            if (lines.isEmpty()) {
-                withContext(Dispatchers.Main) {
-                    showIdle()
+                if (visible == 1 && firstVisibleId == null) {
+                    firstVisibleId = id
                 }
-                return@launch
-            }
-
-            val currentDate = CalbakDateUtil.getCurrentDateKorean()
-            val result = promptHandler.extract(lines, currentDate)
-
-            withContext(Dispatchers.Main) {
-                if (result == null) {
-                    showIdle()
-                    return@withContext
+                if (isPrimary == 1) {
+                    primaryId = id
+                    break
                 }
-
-                // 결과를 패널에 채우기
-                etTitle.setText(result.title ?: "")
-                etLocation.setText(result.location ?: "")
-                etTime.setText(result.timeIso ?: "") // time을 ISO 문자열로 들고 있다고 가정
-
-                showEventPanel()
             }
         }
+
+        return primaryId ?: firstVisibleId
     }
 
-    private fun onSaveEventClicked() {
-        val title = etTitle.text?.toString()?.trim().takeIf { !it.isNullOrEmpty() }
-        val location = etLocation.text?.toString()?.trim().takeIf { !it.isNullOrEmpty() }
-        val timeIso = etTime.text?.toString()?.trim().takeIf { !it.isNullOrEmpty() }
+    /**
+     * 캘린더 이벤트 생성 + 1일 전 알림 추가
+     *
+     * @return 생성된 eventId (실패 시 null)
+     */
+    fun insertEventWithReminder(
+        context: Context,
+        calendarId: Long,
+        title: String?,
+        location: String?,
+        description: String = "Generated by CalBak",
+        startMillis: Long,
+        endMillis: Long,
+        reminderMinutes: Int = 1440
+    ): Long? {
+        return try {
+            val cr = context.contentResolver
+            val values = ContentValues().apply {
+                put(CalendarContract.Events.CALENDAR_ID, calendarId)
+                put(CalendarContract.Events.TITLE, title ?: "")
+                put(CalendarContract.Events.DESCRIPTION, description)
+                put(CalendarContract.Events.EVENT_LOCATION, location ?: "")
+                put(CalendarContract.Events.DTSTART, startMillis)
+                put(CalendarContract.Events.DTEND, endMillis)
+                put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
+            }
 
-        // TODO: timeIso → DateTime → Calendar Provider에 Event insert
-        // 백그라운드에서 처리 후 토스트 띄우고 finish()
+            val uri: Uri? = cr.insert(CalendarContract.Events.CONTENT_URI, values)
+            val eventId = uri?.lastPathSegment?.toLongOrNull()
+            if (eventId == null) {
+                Log.e(TAG, "Failed to insert event, uri=$uri")
+                return null
+            }
 
-        Toast.makeText(context, "일정 등록 (stub)", Toast.LENGTH_SHORT).show()
-        finish()
+            // 1일 전 알림 추가
+            val reminderValues = ContentValues().apply {
+                put(CalendarContract.Reminders.EVENT_ID, eventId)
+                put(CalendarContract.Reminders.MINUTES, reminderMinutes)
+                put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
+            }
+            cr.insert(CalendarContract.Reminders.CONTENT_URI, reminderValues)
+
+            Log.d(TAG, "Event inserted: id=$eventId")
+            eventId
+        } catch (e: SecurityException) {
+            Log.e(TAG, "No calendar permission: $e")
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "insertEventWithReminder failed", e)
+            null
+        }
     }
 }
