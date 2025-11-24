@@ -5,27 +5,30 @@
     android:layout_height="match_parent"
     android:background="@android:color/transparent">
 
-    <!-- 하단 패널 -->
+    <!-- 하단에서 살짝 떠 있는 섬 형태의 패널 -->
     <LinearLayout
         android:id="@+id/assistant_bottom_panel"
         android:layout_width="match_parent"
-        android:layout_height="120dp"
+        android:layout_height="wrap_content"
         android:layout_gravity="bottom"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="32dp"
         android:orientation="horizontal"
         android:padding="16dp"
         android:gravity="center_vertical"
-        android:background="#CC000000">
+        android:background="@drawable/bg_assistant_panel"
+        android:elevation="8dp">
 
         <!-- 앱 아이콘 버튼 -->
         <ImageButton
             android:id="@+id/btn_open_app"
-            android:layout_width="64dp"
-            android:layout_height="64dp"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
             android:background="@android:color/transparent"
-            android:src="@mipmap/ic_launcher"   <!-- 기존 앱 아이콘 -->
+            android:src="@mipmap/ic_launcher"
             android:contentDescription="앱 열기" />
 
-        <!-- 간격 -->
         <View
             android:layout_width="24dp"
             android:layout_height="0dp" />
@@ -33,8 +36,8 @@
         <!-- 캘린더 아이콘 버튼 -->
         <ImageButton
             android:id="@+id/btn_calendar_scan"
-            android:layout_width="64dp"
-            android:layout_height="64dp"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
             android:background="@android:color/transparent"
             android:src="@android:drawable/ic_menu_my_calendar"
             android:contentDescription="캘린더 스캔" />
@@ -43,44 +46,18 @@
 
 </FrameLayout>
 
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
 
-class CalbakAssistSession(context: Context) : VoiceInteractionSession(context) {
+    <corners android:radius="24dp" />
 
-    private var rootView: View? = null
+    <!-- 살짝 반투명한 어두운 배경 -->
+    <solid android:color="#CC222222" />
 
-    override fun onCreateContentView(): View {
-        // 어시스턴트 UI 레이아웃 inflate
-        val view = layoutInflater.inflate(
-            R.layout.view_digital_assistant_ui,
-            null
-        )
-
-        rootView = view
-
-        // 버튼들 찾아서 클릭 리스너 연결 (일단 로그만)
-        val btnOpenApp = view.findViewById<ImageButton>(R.id.btn_open_app)
-        val btnCalendarScan = view.findViewById<ImageButton>(R.id.btn_calendar_scan)
-
-        btnOpenApp.setOnClickListener {
-            Log.d("CalbakAssistSession", "앱 아이콘 클릭")
-            // TODO: 나중에 MainActivity 열기
-        }
-
-        btnCalendarScan.setOnClickListener {
-            Log.d("CalbakAssistSession", "캘린더 아이콘 클릭")
-            // TODO: 나중에 screenshot → OCR → LLM 플로우 시작
-        }
-
-        return view
-    }
-
-    override fun onShow(args: Bundle?, showFlags: Int) {
-        super.onShow(args, showFlags)
-        Log.d("CalbakAssistSession", "onShow - assistant UI 표시됨")
-    }
-
-    override fun onHide() {
-        super.onHide()
-        Log.d("CalbakAssistSession", "onHide - assistant UI 숨김")
-    }
-}
+    <padding
+        android:left="8dp"
+        android:top="8dp"
+        android:right="8dp"
+        android:bottom="8dp" />
+</shape>
