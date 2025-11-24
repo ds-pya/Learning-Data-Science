@@ -1,65 +1,140 @@
-// lib/services/calbak_event_channel.dart
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/assistant_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/transparent">
 
-import 'package:your_app/app/ui/page/calbak_page.dart'; 
-// 또는 CalendarEventDialog 가 정의된 곳
+    <!-- 1) 하단 아이콘 바 (idle) -->
+    <LinearLayout
+        android:id="@+id/panel_idle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="32dp"
+        android:orientation="horizontal"
+        android:padding="16dp"
+        android:gravity="center_vertical"
+        android:background="@drawable/bg_assistant_panel"
+        android:elevation="8dp">
 
-class CalbakEventChannel {
-  static const _channel = MethodChannel('calbak_event');
-  static GlobalKey<NavigatorState>? _navigatorKey;
+        <ImageButton
+            android:id="@+id/btn_open_app"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:src="@drawable/launcher"
+            android:contentDescription="앱 열기" />
 
-  static void init(GlobalKey<NavigatorState> navigatorKey) {
-    _navigatorKey = navigatorKey;
+        <View
+            android:layout_width="24dp"
+            android:layout_height="0dp" />
 
-    _channel.setMethodCallHandler((call) async {
-      if (call.method == 'showEventDialog') {
-        final args = Map<String, dynamic>.from(call.arguments as Map);
+        <ImageButton
+            android:id="@+id/btn_calendar_scan"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:src="@drawable/splash"
+            android:contentDescription="캘린더 스캔" />
+    </LinearLayout>
 
-        final title = args['title'] as String?;
-        final location = args['location'] as String?;
-        final startIso = args['start_time'] as String?;
-        final endIso = args['end_time'] as String?;
+    <!-- 2) 로딩 패널 -->
+    <LinearLayout
+        android:id="@+id/panel_loading"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_margin="32dp"
+        android:orientation="horizontal"
+        android:padding="16dp"
+        android:gravity="center"
+        android:background="@drawable/bg_assistant_panel"
+        android:elevation="8dp"
+        android:visibility="gone">
 
-        final start =
-            (startIso != null && startIso.isNotEmpty) ? DateTime.parse(startIso) : null;
-        final end =
-            (endIso != null && endIso.isNotEmpty) ? DateTime.parse(endIso) : null;
+        <ProgressBar
+            android:layout_width="24dp"
+            android:layout_height="24dp" />
 
-        final ctx = _navigatorKey?.currentContext;
-        if (ctx == null) return;
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:text="일정 분석 중입니다..."
+            android:textColor="@android:color/white" />
+    </LinearLayout>
 
-        _showCalendarEventDialogFromNative(
-          ctx: ctx,
-          title: title,
-          location: location,
-          start: start,
-          end: end,
-        );
-      }
-    });
-  }
+    <!-- 3) 이벤트 다이얼로그 패널 -->
+    <LinearLayout
+        android:id="@+id/panel_event"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_margin="16dp"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:background="@drawable/bg_assistant_panel"
+        android:elevation="8dp"
+        android:visibility="gone">
 
-  static void _showCalendarEventDialogFromNative({
-    required BuildContext ctx,
-    String? title,
-    String? location,
-    DateTime? start,
-    DateTime? end,
-  }) {
-    showDialog(
-      context: ctx,
-      builder: (context) {
-        return CalendarEventDialog(
-          eventTitle: title,
-          eventLocation: location,
-          startTime: start,
-          endTime: end,
-          onConfirm: (/* Event 혹은 값 */) {
-            // 기존 onConfirm 로직 그대로 넣으시면 됩니다.
-          },
-        );
-      },
-    );
-  }
-}
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="일정 확인"
+            android:textStyle="bold"
+            android:textColor="@android:color/white"
+            android:textSize="16sp" />
+
+        <EditText
+            android:id="@+id/et_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="제목"
+            android:textColor="@android:color/white"
+            android:textColorHint="#80FFFFFF"
+            android:inputType="text" />
+
+        <EditText
+            android:id="@+id/et_location"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="장소"
+            android:textColor="@android:color/white"
+            android:textColorHint="#80FFFFFF"
+            android:inputType="text" />
+
+        <EditText
+            android:id="@+id/et_time"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="시작 시간 (ISO8601)"
+            android:textColor="@android:color/white"
+            android:textColorHint="#80FFFFFF"
+            android:inputType="text" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="end"
+            android:layout_marginTop="12dp">
+
+            <Button
+                android:id="@+id/btn_cancel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="취소" />
+
+            <Button
+                android:id="@+id/btn_save"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="등록"
+                android:layout_marginStart="8dp" />
+        </LinearLayout>
+    </LinearLayout>
+
+</FrameLayout>
