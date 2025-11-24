@@ -1,63 +1,65 @@
-<?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/assistant_root"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="@android:color/transparent">
+// lib/services/calbak_event_channel.dart
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
-    <!-- 하단에서 살짝 떠 있는 섬 형태의 패널 -->
-    <LinearLayout
-        android:id="@+id/assistant_bottom_panel"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:layout_marginStart="16dp"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="32dp"
-        android:orientation="horizontal"
-        android:padding="16dp"
-        android:gravity="center_vertical"
-        android:background="@drawable/bg_assistant_panel"
-        android:elevation="8dp">
+import 'package:your_app/app/ui/page/calbak_page.dart'; 
+// 또는 CalendarEventDialog 가 정의된 곳
 
-        <!-- 앱 아이콘 버튼 -->
-        <ImageButton
-            android:id="@+id/btn_open_app"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="@android:color/transparent"
-            android:src="@mipmap/ic_launcher"
-            android:contentDescription="앱 열기" />
+class CalbakEventChannel {
+  static const _channel = MethodChannel('calbak_event');
+  static GlobalKey<NavigatorState>? _navigatorKey;
 
-        <View
-            android:layout_width="24dp"
-            android:layout_height="0dp" />
+  static void init(GlobalKey<NavigatorState> navigatorKey) {
+    _navigatorKey = navigatorKey;
 
-        <!-- 캘린더 아이콘 버튼 -->
-        <ImageButton
-            android:id="@+id/btn_calendar_scan"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="@android:color/transparent"
-            android:src="@android:drawable/ic_menu_my_calendar"
-            android:contentDescription="캘린더 스캔" />
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'showEventDialog') {
+        final args = Map<String, dynamic>.from(call.arguments as Map);
 
-    </LinearLayout>
+        final title = args['title'] as String?;
+        final location = args['location'] as String?;
+        final startIso = args['start_time'] as String?;
+        final endIso = args['end_time'] as String?;
 
-</FrameLayout>
+        final start =
+            (startIso != null && startIso.isNotEmpty) ? DateTime.parse(startIso) : null;
+        final end =
+            (endIso != null && endIso.isNotEmpty) ? DateTime.parse(endIso) : null;
 
-<?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
+        final ctx = _navigatorKey?.currentContext;
+        if (ctx == null) return;
 
-    <corners android:radius="24dp" />
+        _showCalendarEventDialogFromNative(
+          ctx: ctx,
+          title: title,
+          location: location,
+          start: start,
+          end: end,
+        );
+      }
+    });
+  }
 
-    <!-- 살짝 반투명한 어두운 배경 -->
-    <solid android:color="#CC222222" />
-
-    <padding
-        android:left="8dp"
-        android:top="8dp"
-        android:right="8dp"
-        android:bottom="8dp" />
-</shape>
+  static void _showCalendarEventDialogFromNative({
+    required BuildContext ctx,
+    String? title,
+    String? location,
+    DateTime? start,
+    DateTime? end,
+  }) {
+    showDialog(
+      context: ctx,
+      builder: (context) {
+        return CalendarEventDialog(
+          eventTitle: title,
+          eventLocation: location,
+          startTime: start,
+          endTime: end,
+          onConfirm: (/* Event 혹은 값 */) {
+            // 기존 onConfirm 로직 그대로 넣으시면 됩니다.
+          },
+        );
+      },
+    );
+  }
+}
