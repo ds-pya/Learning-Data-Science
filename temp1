@@ -1,71 +1,15 @@
-<!-- 4) 성공 결과 패널 -->
-    <LinearLayout
-        android:id="@+id/panel_result_success"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:layout_margin="16dp"
-        android:orientation="vertical"
-        android:padding="16dp"
-        android:background="@drawable/bg_assistant_panel"
-        android:elevation="8dp"
-        android:visibility="gone">
+import android.content.Intent
+import android.content.ContentUris
+import android.provider.CalendarContract
 
-        <TextView
-            android:id="@+id/tv_success_message"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="일정이 등록되었습니다."
-            android:textColor="@android:color/white"
-            android:textSize="16sp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="end"
-            android:layout_marginTop="12dp">
-
-            <Button
-                android:id="@+id/btn_open_event"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="일정 열기" />
-
-            <Button
-                android:id="@+id/btn_success_ok"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="닫기"
-                android:layout_marginStart="8dp" />
-        </LinearLayout>
-    </LinearLayout>
-
-    <!-- 5) 실패 결과 패널 -->
-    <LinearLayout
-        android:id="@+id/panel_result_error"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:layout_margin="16dp"
-        android:orientation="vertical"
-        android:padding="16dp"
-        android:background="@drawable/bg_assistant_panel"
-        android:elevation="8dp"
-        android:visibility="gone">
-
-        <TextView
-            android:id="@+id/tv_error_message"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="일정 등록에 실패했습니다."
-            android:textColor="@android:color/white"
-            android:textSize="16sp" />
-
-        <Button
-            android:id="@+id/btn_error_ok"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="닫기"
-            android:layout_marginTop="12dp" />
-    </LinearLayout>
+private fun openEventInCalendar(eventId: Long) {
+    val uri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId)
+    val intent = Intent(Intent.ACTION_VIEW).setData(uri).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    try {
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Log.e("CalbakAssistSession", "Failed to open calendar event", e)
+    }
+}
