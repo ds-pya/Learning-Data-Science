@@ -1,122 +1,150 @@
-<!-- 시작 시간 라인 -->
-<LinearLayout
-    android:id="@+id/layout_start_time"
-    android:layout_width="match_parent"
-    android:layout_height="wrap_content"
-    android:orientation="horizontal"
-    android:gravity="center_vertical"
-    android:padding="8dp">
+package com.samsung.android.topick.calbak.openai
 
-    <TextView
-        android:id="@+id/tv_start_time_label"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="시작 시간"
-        android:textColor="@android:color/white"
-        android:textSize="16sp"
-        android:layout_marginEnd="12dp" />
+import com.google.gson.annotations.SerializedName
+import retrofit2.Response
+import retrofit2.http.Body
+import retrofit2.http.Header
+import retrofit2.http.POST
 
-    <EditText
-        android:id="@+id/et_start_time"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:background="@drawable/bg_assistant_input"
-        android:padding="8dp"
-        android:textColor="@android:color/white"
-        android:textSize="16sp"
-        android:focusable="false"
-        android:cursorVisible="false"
-        android:clickable="true"
-        android:inputType="none"
-        android:hint="날짜/시간 선택" />
-</LinearLayout>
-
-<!-- 인라인 DateTime Picker 패널 (처음엔 숨김) -->
-<LinearLayout
-    android:id="@+id/panel_start_time_picker"
-    android:layout_width="match_parent"
-    android:layout_height="wrap_content"
-    android:orientation="vertical"
-    android:padding="8dp"
-    android:background="@drawable/bg_assistant_panel"
-    android:visibility="gone">
-
-    <DatePicker
-        android:id="@+id/date_picker_start"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:calendarViewShown="true" />
-
-    <TimePicker
-        android:id="@+id/time_picker_start"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:is24HourView="true" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="end"
-        android:layout_marginTop="8dp">
-
-        <Button
-            android:id="@+id/btn_start_time_cancel"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="취소" />
-
-        <Button
-            android:id="@+id/btn_start_time_ok"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="확인"
-            android:layout_marginStart="8dp" />
-    </LinearLayout>
-</LinearLayout
-
-
-private fun showStartTimePickerPanel() {
-    val cal = parseIsoToCalendarOrNow(etStartTime.text?.toString())
-
-    // DatePicker 초기화
-    datePickerStart.updateDate(
-        cal.get(Calendar.YEAR),
-        cal.get(Calendar.MONTH),
-        cal.get(Calendar.DAY_OF_MONTH)
-    )
-
-    // TimePicker 초기화
-    val hour = cal.get(Calendar.HOUR_OF_DAY)
-    val minute = cal.get(Calendar.MINUTE)
-
-    timePickerStart.hour = hour
-    timePickerStart.minute = minute
-
-    panelStartTimePicker.visibility = View.VISIBLE
+// ===== Retrofit Interface =====
+interface OpenAIApi {
+    @POST("v1/chat/completions")
+    suspend fun createChatCompletion(
+        @Header("Authorization") auth: String,
+        @Body request: ChatCompletionRequest
+    ): Response<ChatCompletionResponse>
 }
 
-private fun applyStartTimeFromPicker() {
-    val year = datePickerStart.year
-    val month = datePickerStart.month
-    val day = datePickerStart.dayOfMonth
+// ====== Request DTO ======
 
-    val hour = timePickerStart.hour
-    val minute = timePickerStart.minute
+data class ChatCompletionRequest(
+    val model: String,
+    val messages: List<ChatMessage>
+)
 
-    val cal = Calendar.getInstance().apply {
-        set(Calendar.YEAR, year)
-        set(Calendar.MONTH, month)
-        set(Calendar.DAY_OF_MONTH, day)
-        set(Calendar.HOUR_OF_DAY, hour)
-        set(Calendar.MINUTE, minute)
-        set(Calendar.SECOND, 0)
-        set(Calendar.MILLISECOND, 0)
+data class ChatMessage(
+    val role: String, // "user", "system" 등
+    val content: List<MessageContent>
+)
+
+data class MessageContent(
+    val type: String, // "text" or "image_url"
+
+    // type == "text"
+    val text: String? = null,
+
+    // type == "image_url"
+    @SerializedName("image_url")
+    val imageUrl: ImageUrlPayload? = null
+)
+
+data class ImageUrlPayload(
+    val url: String
+)
+
+// ====== Response DTO (최소 필드만) ======
+
+data class ChatCompletionResponse(
+    val id: String,
+    val choices: List<ChatChoice>
+)
+
+data class ChatChoice(
+    val index: Int,
+    val message: ChatMessageResponse
+)
+
+data class ChatMessageResponse(
+    val role: String,
+    val content: List<MessageContentResponse>
+)
+
+data class MessageContentResponse(
+    val type: String,
+    val text: String? = null
+)
+
+package com.samsung.android.topick.calbak.openai
+
+import okhttp3.OkHttpClient
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+
+object OpenAIService {
+
+    private val client: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            // 필요하면 타임아웃, 로깅 인터셉터 등 추가
+            .build()
     }
 
-    val iso = toIso8601(cal.time)
-    etStartTime.setText(iso)
-
-    panelStartTimePicker.visibility = View.GONE
+    val api: OpenAIApi by lazy {
+        Retrofit.Builder()
+            .baseUrl("https://api.openai.com/") // 꼭 / 로 끝나야 함
+            .client(client)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(OpenAIApi::class.java)
+    }
 }
+
+import android.util.Base64
+import android.util.Log
+import com.samsung.android.topick.calbak.openai.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+suspend fun runTestOpenAIVision(imageBytes: ByteArray, apiKey: String): String? =
+    withContext(Dispatchers.IO) {
+        try {
+            // 1) 이미지 base64 인코딩
+            val base64Image = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
+            val dataUrl = "data:image/jpeg;base64,$base64Image"
+
+            // 2) 요청 바디 구성
+            val request = ChatCompletionRequest(
+                model = "gpt-4o-mini",
+                messages = listOf(
+                    ChatMessage(
+                        role = "user",
+                        content = listOf(
+                            MessageContent(
+                                type = "text",
+                                text = "이 이미지는 어떤 화면인지 한두 문장으로 한국어로 설명해줘."
+                            ),
+                            MessageContent(
+                                type = "image_url",
+                                imageUrl = ImageUrlPayload(url = dataUrl)
+                            )
+                        )
+                    )
+                )
+            )
+
+            // 3) API 호출
+            val response = OpenAIService.api.createChatCompletion(
+                auth = "Bearer $apiKey",
+                request = request
+            )
+
+            if (!response.isSuccessful) {
+                val errorBody = response.errorBody()?.string()
+                Log.e("CalbakOpenAI", "OpenAI error: ${response.code()} / $errorBody")
+                return@withContext "Request failed: ${response.code()}"
+            }
+
+            val body = response.body() ?: return@withContext null
+
+            // 4) 첫 번째 choice의 text content 합치기
+            val first = body.choices.firstOrNull()?.message?.content ?: return@withContext null
+            val textParts = first.filter { it.type == "text" }.mapNotNull { it.text }
+
+            val resultText = textParts.joinToString("\n").trim()
+            Log.d("CalbakOpenAI", "Vision result: $resultText")
+
+            resultText.ifEmpty { null }
+        } catch (e: Exception) {
+            Log.e("CalbakOpenAI", "Vision API call failed", e)
+            null
+        }
+    }
