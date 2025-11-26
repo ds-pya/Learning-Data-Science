@@ -1,150 +1,36 @@
-package com.samsung.android.topick.calbak.openai
+override fun onHandleAssist(
+    data: Bundle?,
+    structure: AssistStructure?,
+    content: AssistContent?
+) {
+    super.onHandleAssist(data, structure, content)
 
-import com.google.gson.annotations.SerializedName
-import retrofit2.Response
-import retrofit2.http.Body
-import retrofit2.http.Header
-import retrofit2.http.POST
+    Log.d("CalbakAssist", "====== onHandleAssist() ======")
 
-// ===== Retrofit Interface =====
-interface OpenAIApi {
-    @POST("v1/chat/completions")
-    suspend fun createChatCompletion(
-        @Header("Authorization") auth: String,
-        @Body request: ChatCompletionRequest
-    ): Response<ChatCompletionResponse>
-}
+    // 1) AssistContent 기반 정보
+    val intent = content?.intent
+    val webUri = content?.webUri
+    val clip = content?.clipData
+    val extras = content?.extras
 
-// ====== Request DTO ======
+    Log.d("CalbakAssist", "intent          = $intent")
+    Log.d("CalbakAssist", "intent.data     = ${intent?.data}")
+    Log.d("CalbakAssist", "webUri          = $webUri")
+    Log.d("CalbakAssist", "clipData        = $clip")
+    Log.d("CalbakAssist", "extras keys     = ${extras?.keySet()?.joinToString()}")
 
-data class ChatCompletionRequest(
-    val model: String,
-    val messages: List<ChatMessage>
-)
-
-data class ChatMessage(
-    val role: String, // "user", "system" 등
-    val content: List<MessageContent>
-)
-
-data class MessageContent(
-    val type: String, // "text" or "image_url"
-
-    // type == "text"
-    val text: String? = null,
-
-    // type == "image_url"
-    @SerializedName("image_url")
-    val imageUrl: ImageUrlPayload? = null
-)
-
-data class ImageUrlPayload(
-    val url: String
-)
-
-// ====== Response DTO (최소 필드만) ======
-
-data class ChatCompletionResponse(
-    val id: String,
-    val choices: List<ChatChoice>
-)
-
-data class ChatChoice(
-    val index: Int,
-    val message: ChatMessageResponse
-)
-
-data class ChatMessageResponse(
-    val role: String,
-    val content: List<MessageContentResponse>
-)
-
-data class MessageContentResponse(
-    val type: String,
-    val text: String? = null
-)
-
-package com.samsung.android.topick.calbak.openai
-
-import okhttp3.OkHttpClient
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
-
-object OpenAIService {
-
-    private val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            // 필요하면 타임아웃, 로깅 인터셉터 등 추가
-            .build()
+    // 2) AssistStructure 쪽 정보 (어떤 액티비티/앱인지)
+    if (structure != null) {
+        Log.d("CalbakAssist", "activityComponent = ${structure.activityComponent}")
+        Log.d("CalbakAssist", "windowNodeCount   = ${structure.windowNodeCount}")
+    } else {
+        Log.d("CalbakAssist", "structure is null")
     }
 
-    val api: OpenAIApi by lazy {
-        Retrofit.Builder()
-            .baseUrl("https://api.openai.com/") // 꼭 / 로 끝나야 함
-            .client(client)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-            .create(OpenAIApi::class.java)
+    // data Bundle 안에 뭐가 실려 오는지
+    if (data != null) {
+        Log.d("CalbakAssist", "data keys        = ${data.keySet().joinToString()}")
+    } else {
+        Log.d("CalbakAssist", "data is null")
     }
 }
-
-import android.util.Base64
-import android.util.Log
-import com.samsung.android.topick.calbak.openai.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-
-suspend fun runTestOpenAIVision(imageBytes: ByteArray, apiKey: String): String? =
-    withContext(Dispatchers.IO) {
-        try {
-            // 1) 이미지 base64 인코딩
-            val base64Image = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
-            val dataUrl = "data:image/jpeg;base64,$base64Image"
-
-            // 2) 요청 바디 구성
-            val request = ChatCompletionRequest(
-                model = "gpt-4o-mini",
-                messages = listOf(
-                    ChatMessage(
-                        role = "user",
-                        content = listOf(
-                            MessageContent(
-                                type = "text",
-                                text = "이 이미지는 어떤 화면인지 한두 문장으로 한국어로 설명해줘."
-                            ),
-                            MessageContent(
-                                type = "image_url",
-                                imageUrl = ImageUrlPayload(url = dataUrl)
-                            )
-                        )
-                    )
-                )
-            )
-
-            // 3) API 호출
-            val response = OpenAIService.api.createChatCompletion(
-                auth = "Bearer $apiKey",
-                request = request
-            )
-
-            if (!response.isSuccessful) {
-                val errorBody = response.errorBody()?.string()
-                Log.e("CalbakOpenAI", "OpenAI error: ${response.code()} / $errorBody")
-                return@withContext "Request failed: ${response.code()}"
-            }
-
-            val body = response.body() ?: return@withContext null
-
-            // 4) 첫 번째 choice의 text content 합치기
-            val first = body.choices.firstOrNull()?.message?.content ?: return@withContext null
-            val textParts = first.filter { it.type == "text" }.mapNotNull { it.text }
-
-            val resultText = textParts.joinToString("\n").trim()
-            Log.d("CalbakOpenAI", "Vision result: $resultText")
-
-            resultText.ifEmpty { null }
-        } catch (e: Exception) {
-            Log.e("CalbakOpenAI", "Vision API call failed", e)
-            null
-        }
-    }
