@@ -1,39 +1,73 @@
-private fun showDateTimePicker(targetView: TextView) {
-    val cal = java.util.Calendar.getInstance()
+private fun showDateTimePicker(targetView: EditText) {
+    // 1) 현재 EditText 의 ISO 문자열을 읽어서 초기값으로 사용
+    val baseCal = parseIsoToCalendarOrNow(targetView.text?.toString())
+    val year = baseCal.get(Calendar.YEAR)
+    val month = baseCal.get(Calendar.MONTH)
+    val day = baseCal.get(Calendar.DAY_OF_MONTH)
+    val hour = baseCal.get(Calendar.HOUR_OF_DAY)
+    val minute = baseCal.get(Calendar.MINUTE)
 
-    // 1) 날짜 선택
+    // 2) 날짜 선택
     val datePicker = android.app.DatePickerDialog(
         context,
-        { _, year, month, dayOfMonth ->
-            cal.set(java.util.Calendar.YEAR, year)
-            cal.set(java.util.Calendar.MONTH, month)
-            cal.set(java.util.Calendar.DAY_OF_MONTH, dayOfMonth)
+        { _, y, m, d ->
+            baseCal.set(Calendar.YEAR, y)
+            baseCal.set(Calendar.MONTH, m)
+            baseCal.set(Calendar.DAY_OF_MONTH, d)
 
-            // 2) 시간 선택
+            // 3) 시간 선택
             val timePicker = android.app.TimePickerDialog(
                 context,
-                { _, hourOfDay, minute ->
-                    cal.set(java.util.Calendar.HOUR_OF_DAY, hourOfDay)
-                    cal.set(java.util.Calendar.MINUTE, minute)
+                { _, h, min ->
+                    baseCal.set(Calendar.HOUR_OF_DAY, h)
+                    baseCal.set(Calendar.MINUTE, min)
+                    baseCal.set(Calendar.SECOND, 0)
+                    baseCal.set(Calendar.MILLISECOND, 0)
 
-                    val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
-                    targetView.text = fmt.format(cal.time)
-
-                    // 필요하면 여기서 ISO 문자열로도 따로 저장 가능
-                    // val iso = java.time.ZonedDateTime.ofInstant(
-                    //     cal.toInstant(), java.time.ZoneId.systemDefault()
-                    // ).toString()
+                    // ✅ 최종 선택된 값을 ISO 문자열로 변환
+                    val iso = toIso8601(baseCal.time)
+                    targetView.setText(iso)
                 },
-                cal.get(java.util.Calendar.HOUR_OF_DAY),
-                cal.get(java.util.Calendar.MINUTE),
+                hour,
+                minute,
                 true
             )
             timePicker.show()
         },
-        cal.get(java.util.Calendar.YEAR),
-        cal.get(java.util.Calendar.MONTH),
-        cal.get(java.util.Calendar.DAY_OF_MONTH)
+        year,
+        month,
+        day
     )
 
     datePicker.show()
+}
+
+import java.time.ZonedDateTime
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.util.Calendar
+import java.util.Date
+
+private fun parseIsoToCalendarOrNow(iso: String?): Calendar {
+    val cal = Calendar.getInstance()
+    if (iso.isNullOrBlank()) {
+        return cal
+    }
+
+    return try {
+        // 타임존 포함된 ISO
+        val zdt = ZonedDateTime.parse(iso.trim())
+        cal.time = Date.from(zdt.toInstant())
+        cal
+    } catch (e: Exception) {
+        try {
+            // 타임존 없는 ISO → 시스템 타임존으로
+            val ldt = LocalDateTime.parse(iso.trim())
+            val zdt = ldt.atZone(ZoneId.systemDefault())
+            cal.time = Date.from(zdt.toInstant())
+            cal
+        } catch (_: Exception) {
+            Calendar.getInstance()
+        }
+    }
 }
