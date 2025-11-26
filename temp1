@@ -1,73 +1,122 @@
-private fun showDateTimePicker(targetView: EditText) {
-    // 1) 현재 EditText 의 ISO 문자열을 읽어서 초기값으로 사용
-    val baseCal = parseIsoToCalendarOrNow(targetView.text?.toString())
-    val year = baseCal.get(Calendar.YEAR)
-    val month = baseCal.get(Calendar.MONTH)
-    val day = baseCal.get(Calendar.DAY_OF_MONTH)
-    val hour = baseCal.get(Calendar.HOUR_OF_DAY)
-    val minute = baseCal.get(Calendar.MINUTE)
+<!-- 시작 시간 라인 -->
+<LinearLayout
+    android:id="@+id/layout_start_time"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:padding="8dp">
 
-    // 2) 날짜 선택
-    val datePicker = android.app.DatePickerDialog(
-        context,
-        { _, y, m, d ->
-            baseCal.set(Calendar.YEAR, y)
-            baseCal.set(Calendar.MONTH, m)
-            baseCal.set(Calendar.DAY_OF_MONTH, d)
+    <TextView
+        android:id="@+id/tv_start_time_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="시작 시간"
+        android:textColor="@android:color/white"
+        android:textSize="16sp"
+        android:layout_marginEnd="12dp" />
 
-            // 3) 시간 선택
-            val timePicker = android.app.TimePickerDialog(
-                context,
-                { _, h, min ->
-                    baseCal.set(Calendar.HOUR_OF_DAY, h)
-                    baseCal.set(Calendar.MINUTE, min)
-                    baseCal.set(Calendar.SECOND, 0)
-                    baseCal.set(Calendar.MILLISECOND, 0)
+    <EditText
+        android:id="@+id/et_start_time"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:background="@drawable/bg_assistant_input"
+        android:padding="8dp"
+        android:textColor="@android:color/white"
+        android:textSize="16sp"
+        android:focusable="false"
+        android:cursorVisible="false"
+        android:clickable="true"
+        android:inputType="none"
+        android:hint="날짜/시간 선택" />
+</LinearLayout>
 
-                    // ✅ 최종 선택된 값을 ISO 문자열로 변환
-                    val iso = toIso8601(baseCal.time)
-                    targetView.setText(iso)
-                },
-                hour,
-                minute,
-                true
-            )
-            timePicker.show()
-        },
-        year,
-        month,
-        day
+<!-- 인라인 DateTime Picker 패널 (처음엔 숨김) -->
+<LinearLayout
+    android:id="@+id/panel_start_time_picker"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="8dp"
+    android:background="@drawable/bg_assistant_panel"
+    android:visibility="gone">
+
+    <DatePicker
+        android:id="@+id/date_picker_start"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:calendarViewShown="true" />
+
+    <TimePicker
+        android:id="@+id/time_picker_start"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:is24HourView="true" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="end"
+        android:layout_marginTop="8dp">
+
+        <Button
+            android:id="@+id/btn_start_time_cancel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="취소" />
+
+        <Button
+            android:id="@+id/btn_start_time_ok"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="확인"
+            android:layout_marginStart="8dp" />
+    </LinearLayout>
+</LinearLayout
+
+
+private fun showStartTimePickerPanel() {
+    val cal = parseIsoToCalendarOrNow(etStartTime.text?.toString())
+
+    // DatePicker 초기화
+    datePickerStart.updateDate(
+        cal.get(Calendar.YEAR),
+        cal.get(Calendar.MONTH),
+        cal.get(Calendar.DAY_OF_MONTH)
     )
 
-    datePicker.show()
+    // TimePicker 초기화
+    val hour = cal.get(Calendar.HOUR_OF_DAY)
+    val minute = cal.get(Calendar.MINUTE)
+
+    timePickerStart.hour = hour
+    timePickerStart.minute = minute
+
+    panelStartTimePicker.visibility = View.VISIBLE
 }
 
-import java.time.ZonedDateTime
-import java.time.LocalDateTime
-import java.time.ZoneId
-import java.util.Calendar
-import java.util.Date
+private fun applyStartTimeFromPicker() {
+    val year = datePickerStart.year
+    val month = datePickerStart.month
+    val day = datePickerStart.dayOfMonth
 
-private fun parseIsoToCalendarOrNow(iso: String?): Calendar {
-    val cal = Calendar.getInstance()
-    if (iso.isNullOrBlank()) {
-        return cal
+    val hour = timePickerStart.hour
+    val minute = timePickerStart.minute
+
+    val cal = Calendar.getInstance().apply {
+        set(Calendar.YEAR, year)
+        set(Calendar.MONTH, month)
+        set(Calendar.DAY_OF_MONTH, day)
+        set(Calendar.HOUR_OF_DAY, hour)
+        set(Calendar.MINUTE, minute)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
     }
 
-    return try {
-        // 타임존 포함된 ISO
-        val zdt = ZonedDateTime.parse(iso.trim())
-        cal.time = Date.from(zdt.toInstant())
-        cal
-    } catch (e: Exception) {
-        try {
-            // 타임존 없는 ISO → 시스템 타임존으로
-            val ldt = LocalDateTime.parse(iso.trim())
-            val zdt = ldt.atZone(ZoneId.systemDefault())
-            cal.time = Date.from(zdt.toInstant())
-            cal
-        } catch (_: Exception) {
-            Calendar.getInstance()
-        }
-    }
+    val iso = toIso8601(cal.time)
+    etStartTime.setText(iso)
+
+    panelStartTimePicker.visibility = View.GONE
 }
