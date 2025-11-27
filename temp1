@@ -1,36 +1,145 @@
-override fun onHandleAssist(
-    data: Bundle?,
-    structure: AssistStructure?,
-    content: AssistContent?
-) {
-    super.onHandleAssist(data, structure, content)
+// CalbakConverters.kt
+package com.samsung.android.topick.calbak.db
 
-    Log.d("CalbakAssist", "====== onHandleAssist() ======")
+import androidx.room.TypeConverter
+import org.json.JSONArray
 
-    // 1) AssistContent 기반 정보
-    val intent = content?.intent
-    val webUri = content?.webUri
-    val clip = content?.clipData
-    val extras = content?.extras
+class CalbakConverters {
 
-    Log.d("CalbakAssist", "intent          = $intent")
-    Log.d("CalbakAssist", "intent.data     = ${intent?.data}")
-    Log.d("CalbakAssist", "webUri          = $webUri")
-    Log.d("CalbakAssist", "clipData        = $clip")
-    Log.d("CalbakAssist", "extras keys     = ${extras?.keySet()?.joinToString()}")
-
-    // 2) AssistStructure 쪽 정보 (어떤 액티비티/앱인지)
-    if (structure != null) {
-        Log.d("CalbakAssist", "activityComponent = ${structure.activityComponent}")
-        Log.d("CalbakAssist", "windowNodeCount   = ${structure.windowNodeCount}")
-    } else {
-        Log.d("CalbakAssist", "structure is null")
+    @TypeConverter
+    fun fromStringList(value: List<String>?): String? {
+        if (value == null) return null
+        val arr = JSONArray()
+        value.forEach { arr.put(it) }
+        return arr.toString()
     }
 
-    // data Bundle 안에 뭐가 실려 오는지
-    if (data != null) {
-        Log.d("CalbakAssist", "data keys        = ${data.keySet().joinToString()}")
-    } else {
-        Log.d("CalbakAssist", "data is null")
+    @TypeConverter
+    fun toStringList(value: String?): List<String>? {
+        if (value.isNullOrBlank()) return emptyList()
+        val arr = JSONArray(value)
+        return List(arr.length()) { idx -> arr.getString(idx) }
     }
 }
+
+// CalbakContentEntity.kt
+package com.samsung.android.topick.calbak.db
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+@Entity(tableName = "calbak_content")
+data class CalbakContentEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0L,
+
+    val createdAt: Long,
+
+    val sourcePackage: String?,
+    val sourceActivity: String?,
+    val sourceUrl: String?,
+    val sourceExtra: String?,
+    val screenshotUri: String?,
+
+    val flow: String,           // "schedule" / "memo" ...
+    val flowSubtype: String?,   // "schedule", "book", "product", "restaurant", "info"...
+
+    val contentTitle: String?,
+    val contentType: List<String>?,   // 해시태그 느낌
+    val contentLocation: String?,
+    val startAt: String?,      // ISO8601 string
+    val endAt: String?,        // ISO8601 string
+    val summary: String?,
+
+    val modelOutput: String?   // OCR/LLM raw JSON
+)
+
+// CalbakDatabase.kt
+package com.samsung.android.topick.calbak.db
+
+import androidx.room.Database
+import androidx.room.RoomDatabase
+import androidx.room.TypeConverters
+
+@Database(
+    entities = [CalbakContentEntity::class],
+    version = 1,
+    exportSchema = false
+)
+@TypeConverters(CalbakConverters::class)
+abstract class CalbakDatabase : RoomDatabase() {
+    abstract fun calbakContentDao(): CalbakContentDao
+}
+
+// CalbakContentDao.kt
+package com.samsung.android.topick.calbak.db
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+
+@Dao
+interface CalbakContentDao {
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(entity: CalbakContentEntity): Long
+
+    @Query("SELECT * FROM calbak_content WHERE flow = :flow ORDER BY createdAt DESC")
+    suspend fun getByFlow(flow: String): List<CalbakContentEntity>
+
+    @Query("SELECT * FROM calbak_content ORDER BY createdAt DESC LIMIT :limit")
+    suspend fun getRecent(limit: Int = 50): List<CalbakContentEntity>
+}
+
+{
+  "flow": "schedule",
+  "flow_subtype": "schedule",
+
+  "content_title": "홍길동 결혼식",
+  "content_type": ["wedding", "friend"],
+
+  "content_location": "강남 웨딩홀",
+  "start_at": "2025-03-02T13:00:00+09:00",
+  "end_at": "2025-03-02T15:00:00+09:00",
+
+  "summary": "홍길동의 결혼식 일정. 3월 2일 오후 1시, 강남 웨딩홀에서 진행.",
+  "model_output_notes": "필요하면 여기에 추가 설명"
+}
+
+당신은 사용자의 화면 캡쳐에서 "일정 정보를 추출하는 비서" 입니다.
+
+아래는 한국어로 된 텍스트입니다. 이 텍스트는 예약 페이지, 초대장, 약속 대화, 전시회 포스터 등 일정과 관련된 내용일 수 있습니다.
+
+1. 이 텍스트에 일정이 없으면, 모든 필드를 null 또는 빈 배열로 채운 JSON 을 반환하세요.
+2. 일정이 있다면, 다음 규칙에 따라 JSON 하나를 반환하세요.
+
+[필드 정의]
+- flow: 항상 "schedule"
+- flow_subtype: 항상 "schedule"
+- content_title: 일정의 제목. 없다면 텍스트를 요약한 짧은 제목.
+- content_type: 일정의 종류를 설명하는 해시태그 목록 (예: ["wedding", "meeting", "festival"]). 생각이 안 나면 빈 배열 [].
+- content_location: 장소나 지점명. 없으면 null.
+- start_at: ISO 8601 형식의 시작 시각 (예: "2025-03-02T13:00:00+09:00"). 추정이 어렵다면 null.
+- end_at: ISO 8601 형식의 종료 시각. 없으면 null.
+- summary: 사용자가 이해하기 쉬운 한두 문장짜리 한국어 요약.
+- model_output_notes: 필요한 경우에만 추가 메모, 아니면 빈 문자열.
+
+반드시 아래 JSON 형식으로만 답변하세요. 자연어 설명은 쓰지 마세요.
+
+예시 출력:
+{
+  "flow": "schedule",
+  "flow_subtype": "schedule",
+  "content_title": "홍길동 결혼식",
+  "content_type": ["wedding", "friend"],
+  "content_location": "강남 웨딩홀",
+  "start_at": "2025-03-02T13:00:00+09:00",
+  "end_at": "2025-03-02T15:00:00+09:00",
+  "summary": "홍길동의 결혼식 일정입니다. 3월 2일 오후 1시, 강남 웨딩홀에서 진행됩니다.",
+  "model_output_notes": ""
+}
+
+[텍스트 시작]
+{{ocr_text}}
+[텍스트 끝]
