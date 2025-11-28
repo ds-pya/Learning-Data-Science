@@ -1,84 +1,131 @@
-import org.json.JSONObject
+package com.samsung.android.topick // ← 패키지는 프로젝트에 맞게 수정
 
-private fun parseScheduleResult(raw: String?): ScheduleResult? {
-    if (raw.isNullOrBlank()) return null
+import android.app.role.RoleManager
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.os.Bundle
+import android.provider.Settings
+import androidx.appcompat.app.AlertDialog
+import androidx.core.content.edit
+import io.flutter.embedding.android.FlutterActivity
+import com.samsung.android.topick.BuildConfig
 
-    return try {
-        val obj = JSONObject(raw)
+class MainActivity : FlutterActivity() {
 
-        val title = obj.optString("content_title").takeIf { it.isNotBlank() }
-        val location = obj.optString("content_location").takeIf { it.isNotBlank() }
-        val startAt = obj.optString("start_at").takeIf { it.isNotBlank() }
-        val endAt = obj.optString("end_at").takeIf { it.isNotBlank() }
-
-        ScheduleResult(
-            title = title,
-            location = location,
-            startIso = startAt,
-            endIso = endAt,
-            rawJson = raw
-        )
-    } catch (e: Exception) {
-        Log.e("CalbakParse", "Failed to parse schedule JSON", e)
-        null
+    companion object {
+        private const val PREF_NAME = "calbak_prefs"
+        private const val KEY_ASSISTANT_PROMPT_VERSION = "assistant_prompt_version"
     }
-}
 
-import com.samsung.android.topick.calbak.db.CalbakContentEntity
+    override fun onResume() {
+        super.onResume()
+        checkAssistantAndAskIfNeeded()
+    }
 
-private fun buildScheduleEntity(
-    schedule: ScheduleResult,
-    screenshotUri: String?,
-    sourcePackage: String?,
-    sourceActivity: String?,
-    sourceUrl: String?
-): CalbakContentEntity {
-    val nowMillis = System.currentTimeMillis()
-
-    // 해시태그 느낌의 타입 – 간단히 "schedule" 하나만 넣거나,
-    // 나중에 LLM JSON 의 content_type 배열을 같이 파싱해서 넣어도 됨.
-    val tags: List<String> = listOf("schedule")
-
-    return CalbakContentEntity(
-        id = 0L,
-        createdAt = nowMillis,
-        sourcePackage = sourcePackage,
-        sourceActivity = sourceActivity,
-        sourceUrl = sourceUrl,
-        sourceExtra = null,
-        screenshotUri = screenshotUri,
-        flow = "schedule",
-        flowSubtype = "schedule",
-        contentTitle = schedule.title,
-        contentType = tags,
-        contentLocation = schedule.location,
-        startAt = schedule.startIso,
-        endAt = schedule.endIso,
-        summary = null,                // LLM JSON 에 summary 있으면 파싱해서 넣어도 됨
-        modelOutput = schedule.rawJson // Vision 원본 JSON 전체 저장
-    )
-}
-
-private fun onScheduleRegisterClicked(
-    edited: ScheduleResult,
-    screenshotUri: String?
-) {
-    assistScope.launch(Dispatchers.IO) {
-        val entity = buildScheduleEntity(
-            schedule = edited,
-            screenshotUri = screenshotUri,
-            sourcePackage = lastSourcePackage,   // onHandleAssist 에서 저장
-            sourceActivity = lastSourceActivity,
-            sourceUrl = lastSourceUrl
-        )
-
-        calbakDb.calbakContentDao().insert(entity)
-
-        // 캘린더 등록 로직도 여기서 수행
-        // ...
-
-        withContext(Dispatchers.Main) {
-            // "등록되었습니다" 패널 표시
+    /**
+     * 1) 기본 어시스턴트인지 확인
+     * 2) 아니고, 이번 버전에서 아직 안 물어봤으면 다이얼로그 띄우기
+     */
+    private fun checkAssistantAndAskIfNeeded() {
+        // 이미 기본 어시스턴트면 아무 것도 안 함
+        if (isMyAppDefaultAssistant()) {
+            return
         }
+
+        // 이번 버전에서 이미 물어봤다면 다시 안 물어봄
+        if (!shouldAskForAssistantThisVersion()) {
+            return
+        }
+
+        // 여기까지 왔다 = 이번 버전 첫 실행 & 기본 어시스턴트 아님 → 다이얼로그 표시
+        showAssistantDialog()
+    }
+
+    /**
+     * 우리 앱이 기본 디지털 어시스턴트인지 여부
+     */
+    private fun isMyAppDefaultAssistant(): Boolean {
+        val context = this
+
+        // API 29 이상: RoleManager로 확인
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roleManager = getSystemService(RoleManager::class.java)
+            return roleManager?.isRoleHeld(RoleManager.ROLE_ASSISTANT) == true
+        }
+
+        // 그 이하: Secure settings의 assistant 컴포넌트 확인
+        val assistant = Settings.Secure.getString(
+            context.contentResolver,
+            "assistant"
+        ) ?: return false
+
+        val cn = ComponentName.unflattenFromString(assistant) ?: return false
+        return cn.packageName == context.packageName
+    }
+
+    /**
+     * 이번 앱 버전에서 아직 "어시스턴트 설정할래?"를 물어본 적이 없는지 여부
+     */
+    private fun shouldAskForAssistantThisVersion(): Boolean {
+        val prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val lastAskedVersion = prefs.getInt(KEY_ASSISTANT_PROMPT_VERSION, -1)
+        val currentVersion = BuildConfig.VERSION_CODE
+        return lastAskedVersion != currentVersion
+    }
+
+    /**
+     * 이번 버전에서 이미 한번 물어봤다고 기록
+     */
+    private fun markAssistantAskedThisVersion() {
+        val prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val currentVersion = BuildConfig.VERSION_CODE
+        prefs.edit {
+            putInt(KEY_ASSISTANT_PROMPT_VERSION, currentVersion)
+        }
+    }
+
+    /**
+     * 다이얼로그 표시: 설정으로 이동 / 나중에
+     */
+    private fun showAssistantDialog() {
+        // 한 번이라도 다이얼로그가 뜨면 "이번 버전에서 물어봄"으로 기록
+        markAssistantAskedThisVersion()
+
+        AlertDialog.Builder(this)
+            .setTitle("디지털 어시스턴트 설정")
+            .setMessage(
+                "현재 이 앱은 기본 디지털 어시스턴트로 설정되어 있지 않습니다.\n\n" +
+                "측면 버튼 길게 눌렀을 때 이 앱이 실행되도록 설정하시겠어요?"
+            )
+            .setPositiveButton("설정으로 이동") { _, _ ->
+                openAssistantSettings()
+            }
+            .setNegativeButton("나중에") { dialog, _ ->
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    /**
+     * 시스템 디지털 어시스턴트 설정 화면 / 역할 요청 화면으로 이동
+     */
+    private fun openAssistantSettings() {
+        // API 29 이상: RoleManager로 역할 요청
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roleManager = getSystemService(RoleManager::class.java)
+            val intent = roleManager?.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT)
+            if (intent != null) {
+                startActivity(intent)
+                return
+            }
+        }
+
+        // Fallback: 음성 입력/어시스턴트 설정 화면
+        val intent = Intent(Settings.ACTION_VOICE_INPUT_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
     }
 }
