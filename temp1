@@ -1,92 +1,281 @@
-package com.samsung.android.topick.smolvlm
+cmake_minimum_required(VERSION 3.22.1)
+project(smolvlm_jni)
 
-import android.content.Context
-import android.util.Log
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+# llama.cpp 소스 디렉토리 추가 (경로는 실제 체크 후 수정)
+# 예: android/app/src/main/cpp/llama.cpp 프로젝트를 서브모듈로 두었다고 가정
+add_subdirectory(llama)
 
-class SmolVlmRunner(
-    private val context: Context
+# JNI 래퍼 소스
+add_library(
+        smolvlm_jni
+        SHARED
+        smolvlm_jni.cpp
+)
+
+# 안드로이드 log 라이브러리
+find_library(
+        log-lib
+        log
+)
+
+# llama.cpp에서 만들어지는 라이브러리가 'llama' 라고 가정 (CMakeLists에 따라 이름 확인 필요)
+target_link_libraries(
+        smolvlm_jni
+        PRIVATE
+        llama
+        ${log-lib}
+)
+
+#include <jni.h>
+#include <string>
+#include <vector>
+#include <mutex>
+
+#include <android/log.h>
+
+// llama.cpp 헤더 (경로는 실제 프로젝트 구조에 맞게 조정)
+#include "llama.h"
+
+#define LOG_TAG "SmolVlmJNI"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+static std::mutex g_mutex;
+static llama_model* g_model = nullptr;
+static llama_context* g_ctx = nullptr;
+static int g_n_ctx = 2048;
+
+// --------------------
+// 헬퍼: JNI 문자열 변환
+// --------------------
+
+static std::string jstringToStdString(JNIEnv* env, jstring jstr) {
+    if (!jstr) return {};
+    const char* chars = env->GetStringUTFChars(jstr, nullptr);
+    std::string result(chars ? chars : "");
+    env->ReleaseStringUTFChars(jstr, chars);
+    return result;
+}
+
+// --------------------
+// nativeInit
+// --------------------
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_samsung_android_topick_smolvlm_SmolVlmRunner_nativeInit(
+        JNIEnv* env,
+        jobject thiz,
+        jstring jModelPath,
+        jstring jMmprojPath,
+        jint jNCtx,
+        jint jNThreads
 ) {
+    std::lock_guard<std::mutex> lock(g_mutex);
 
-    private val config: SmolVlmConfig by lazy {
-        // 1단계에서 만든 PathProvider 재사용
-        SmolVlmPathProvider.prepareConfig(context)
+    if (g_model != nullptr && g_ctx != nullptr) {
+        LOGD("nativeInit: already initialized, skip");
+        return;
     }
 
-    @Volatile
-    private var initialized = false
+    const std::string modelPath = jstringToStdString(env, jModelPath);
+    const std::string mmprojPath = jstringToStdString(env, jMmprojPath); // TODO: VLM 연동시 사용
+    g_n_ctx = static_cast<int>(jNCtx);
 
-    init {
-        // 필요하면 여기서 미리 초기화, 아니면 lazy init도 가능
-        // initIfNeeded()  // <- 지금은 주석으로 두고, 나중에 원하는 타이밍에 호출
+    LOGD("nativeInit: modelPath=%s, mmprojPath=%s, n_ctx=%d, n_threads=%d",
+         modelPath.c_str(), mmprojPath.c_str(), g_n_ctx, (int) jNThreads);
+
+    // llama backend 초기화
+    llama_backend_init();
+
+    // 모델 로딩 파라미터
+    llama_model_params mparams = llama_model_default_params();
+    // 필요하면 mparams 에서 kv override 가능 (e.g. vocab_only 등)
+
+    g_model = llama_load_model_from_file(modelPath.c_str(), mparams);
+    if (!g_model) {
+        LOGE("Failed to load model from %s", modelPath.c_str());
+        return;
     }
 
-    @Synchronized
-    private fun initIfNeeded() {
-        if (initialized) return
+    // 컨텍스트 생성
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx = g_n_ctx;
+    cparams.n_threads = (int) jNThreads;
 
-        try {
-            // NDK 빌드시 만들어질 llama.cpp 네이티브 라이브러리 이름
-            System.loadLibrary("llama")  // libllama.so
-        } catch (e: UnsatisfiedLinkError) {
-            Log.e("SmolVlmRunner", "Failed to load llama native library", e)
-            throw e
+    g_ctx = llama_new_context_with_model(g_model, cparams);
+    if (!g_ctx) {
+        LOGE("Failed to create llama context");
+        llama_free_model(g_model);
+        g_model = nullptr;
+        return;
+    }
+
+    LOGD("nativeInit: success");
+
+    // ⚠️ VLM (vision) 통합은 여기서 mmprojPath 를 이용해
+    // llama.cpp 의 vision API (예: llava/mmproj attach 등) 를 호출해야 합니다.
+    // 이는 llama.cpp 버전에 따라 API 가 달라지므로
+    // 공식 예제(examples/llava) 코드를 참고해 별도로 연동해야 합니다.
+}
+
+// --------------------
+// 간단한 text-only inference helper
+// (이미지는 일단 무시, prompt 기반 텍스트 LLM 처리를 위해)
+// --------------------
+
+static std::string run_text_only_completion(
+        const std::string& prompt,
+        float temperature,
+        float top_p,
+        int max_tokens
+) {
+    if (!g_ctx || !g_model) {
+        LOGE("run_text_only_completion: context/model not initialized");
+        return "";
+    }
+
+    // 기본적으로 llama.cpp 예제(loopy)와 비슷한 토큰화 + 루프를 사용
+    const int n_ctx = g_n_ctx;
+    const int n_keep = 0;
+
+    std::vector<llama_token> tokens = llama_tokenize(
+            g_model,
+            prompt,
+            true,   // add bos
+            false   // special
+    );
+
+    if ((int) tokens.size() > n_ctx) {
+        LOGE("Prompt is too long (%d tokens > n_ctx=%d)", (int) tokens.size(), n_ctx);
+        return "";
+    }
+
+    // 프롬프트 토큰 모두 eval
+    int n_past = 0;
+    int n_predict = max_tokens;
+
+    // prompt feed
+    {
+        llama_batch batch = llama_batch_init( /*n_tokens*/ (int) tokens.size(), /*embd*/ 0, /*n_seq_max*/ 1);
+        for (int i = 0; i < (int) tokens.size(); ++i) {
+            batch.token[i] = tokens[i];
+            batch.pos[i] = n_past + i;
+            batch.seq_id[i] = 0;
+            batch.n_seq_id[i] = 1;
+        }
+        batch.n_tokens = (int) tokens.size();
+
+        if (llama_decode(g_ctx, batch) != 0) {
+            LOGE("llama_decode() failed during prompt");
+            llama_batch_free(batch);
+            return "";
+        }
+        n_past += (int) tokens.size();
+        llama_batch_free(batch);
+    }
+
+    std::string out;
+    out.reserve(max_tokens * 4);
+
+    llama_sampling_params sparams = llama_sampling_default_params();
+    sparams.temp = temperature;
+    sparams.top_p = top_p;
+
+    for (int i = 0; i < n_predict; ++i) {
+        // 샘플링
+        llama_token token = llama_sampling_sample(g_ctx, &sparams);
+        llama_sampling_accept(g_ctx, &sparams, token);
+
+        if (token == llama_token_eos(g_model)) {
+            LOGD("Reached EOS");
+            break;
         }
 
-        // gguf 경로 준비
-        val modelPath = config.modelPath
-        val mmprojPath = config.mmprojPath
+        const char* piece = llama_token_to_piece(g_model, token);
+        if (piece) {
+            out.append(piece);
+        }
 
-        Log.d("SmolVlmRunner", "Init native with model=$modelPath, mmproj=$mmprojPath")
+        // 다음 토큰 eval
+        llama_batch batch = llama_batch_init(/*n_tokens*/ 1, /*embd*/ 0, /*n_seq_max*/ 1);
+        batch.token[0] = token;
+        batch.pos[0] = n_past;
+        batch.seq_id[0] = 0;
+        batch.n_seq_id[0] = 1;
+        batch.n_tokens = 1;
 
-        // TODO: 나중에 native 구현과 연결
-        nativeInit(
-            modelPath,
-            mmprojPath,
-            config.nCtx,
-            config.nThreads
-        )
-
-        initialized = true
+        if (llama_decode(g_ctx, batch) != 0) {
+            LOGE("llama_decode() failed during generation step %d", i);
+            llama_batch_free(batch);
+            break;
+        }
+        n_past += 1;
+        llama_batch_free(batch);
     }
 
-    /**
-     * 이미지 + 프롬프트로 온디바이스 VLM 실행
-     * - prompt: 텍스트 인스트럭션 (일정/메모 추출용)
-     * - imageBytes: (리사이즈된) 스크린샷 바이트 배열 (PNG/JPEG)
-     */
-    suspend fun run(
-        prompt: String,
-        imageBytes: ByteArray
-    ): String = withContext(Dispatchers.Default) {
-        initIfNeeded()
-        // TODO: 토큰 수/옵션을 더 세밀하게 넘기고 싶으면 config를 풀어서 전달
-        nativeEval(
-            prompt,
-            imageBytes,
-            config.temperature,
-            config.topP,
-            config.maxTokens
-        )
+    // 정리
+    llama_sampling_free(&sparams);
+    return out;
+}
+
+// --------------------
+// nativeEval
+// --------------------
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_samsung_android_topick_smolvlm_SmolVlmRunner_nativeEval(
+        JNIEnv* env,
+        jobject thiz,
+        jstring jPrompt,
+        jbyteArray jImageBytes,
+        jfloat jTemperature,
+        jfloat jTopP,
+        jint jMaxTokens
+) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    const std::string prompt = jstringToStdString(env, jPrompt);
+
+    // 이미지 바이트는 일단 무시 (TODO: VLM vision 통합시 사용)
+    // jbyte* imgData = env->GetByteArrayElements(jImageBytes, nullptr);
+    // jsize imgLen = env->GetArrayLength(jImageBytes);
+    // -> llama.cpp vision embedding 으로 전달해야 함
+    // env->ReleaseByteArrayElements(jImageBytes, imgData, JNI_ABORT);
+
+    LOGD("nativeEval: prompt len=%d, temp=%.2f, top_p=%.2f, max_tokens=%d",
+         (int) prompt.size(), (float) jTemperature, (float) jTopP, (int) jMaxTokens);
+
+    const float temp = (float) jTemperature;
+    const float top_p = (float) jTopP;
+    const int max_tokens = (int) jMaxTokens;
+
+    std::string result = run_text_only_completion(prompt, temp, top_p, max_tokens);
+
+    return env->NewStringUTF(result.c_str());
+}
+
+@Synchronized
+private fun initIfNeeded() {
+    if (initialized) return
+
+    try {
+        System.loadLibrary("smolvlm_jni")  // <- 이 이름과 CMake의 add_library 이름이 일치해야 함
+    } catch (e: UnsatisfiedLinkError) {
+        Log.e("SmolVlmRunner", "Failed to load smolvlm_jni library", e)
+        throw e
     }
 
-    // --------------------
-    // JNI Native 함수 시그니처 (구현은 C/C++ 쪽에서)
-    // --------------------
+    val modelPath = config.modelPath
+    val mmprojPath = config.mmprojPath
 
-    private external fun nativeInit(
-        modelPath: String,
-        mmprojPath: String,
-        nCtx: Int,
-        nThreads: Int
+    nativeInit(
+        modelPath,
+        mmprojPath,
+        config.nCtx,
+        config.nThreads
     )
 
-    private external fun nativeEval(
-        prompt: String,
-        imageBytes: ByteArray,
-        temperature: Float,
-        topP: Float,
-        maxTokens: Int
-    ): String
+    initialized = true
 }
