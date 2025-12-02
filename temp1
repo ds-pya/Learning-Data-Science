@@ -1,91 +1,92 @@
-<?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:orientation="vertical"
-    android:padding="24dp"
-    android:background="@drawable/bg_dialog_rounded"
-    android:gravity="center_vertical"
-    android:layout_width="match_parent"
-    android:layout_height="wrap_content">
+package com.samsung.android.topick.smolvlm
 
-    <TextView
-        android:id="@+id/tvTitle"
-        android:text="디지털 어시스턴트 설정"
-        android:textSize="20sp"
-        android:textStyle="bold"
-        android:textColor="#FFFFFF"
-        android:layout_marginBottom="12dp"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"/>
+import android.content.Context
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-    <TextView
-        android:id="@+id/tvMessage"
-        android:text="이 앱을 기본 디지털 어시스턴트로 설정하시겠어요?"
-        android:textColor="#DDDDDD"
-        android:textSize="15sp"
-        android:layout_marginBottom="24dp"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"/>
+class SmolVlmRunner(
+    private val context: Context
+) {
 
-    <LinearLayout
-        android:orientation="horizontal"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="end">
-
-        <Button
-            android:id="@+id/btnCancel"
-            android:text="나중에"
-            android:background="@android:color/transparent"
-            android:textColor="#CCCCCC"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"/>
-
-        <Button
-            android:id="@+id/btnConfirm"
-            android:text="설정으로 이동"
-            android:textColor="#FFFFFF"
-            android:layout_marginStart="16dp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"/>
-    </LinearLayout>
-
-</LinearLayout>
-
-
-
-<?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-
-    <solid android:color="#333333"/>
-    <corners android:radius="20dp"/>
-
-</shape>
-
-
-private fun showAssistantDialog() {
-    markAssistantAskedThisVersion()
-
-    val dialog = Dialog(this, android.R.style.Theme_DeviceDefault_Dialog_NoActionBar)
-    dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-
-    val view = layoutInflater.inflate(R.layout.custom_dialog_assistant, null)
-    dialog.setContentView(view)
-
-    dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-
-    // 버튼 클릭 처리
-    val btnCancel = view.findViewById<Button>(R.id.btnCancel)
-    val btnConfirm = view.findViewById<Button>(R.id.btnConfirm)
-
-    btnCancel.setOnClickListener {
-        dialog.dismiss()
+    private val config: SmolVlmConfig by lazy {
+        // 1단계에서 만든 PathProvider 재사용
+        SmolVlmPathProvider.prepareConfig(context)
     }
 
-    btnConfirm.setOnClickListener {
-        dialog.dismiss()
-        openAssistantSettings()
+    @Volatile
+    private var initialized = false
+
+    init {
+        // 필요하면 여기서 미리 초기화, 아니면 lazy init도 가능
+        // initIfNeeded()  // <- 지금은 주석으로 두고, 나중에 원하는 타이밍에 호출
     }
 
-    dialog.show()
+    @Synchronized
+    private fun initIfNeeded() {
+        if (initialized) return
+
+        try {
+            // NDK 빌드시 만들어질 llama.cpp 네이티브 라이브러리 이름
+            System.loadLibrary("llama")  // libllama.so
+        } catch (e: UnsatisfiedLinkError) {
+            Log.e("SmolVlmRunner", "Failed to load llama native library", e)
+            throw e
+        }
+
+        // gguf 경로 준비
+        val modelPath = config.modelPath
+        val mmprojPath = config.mmprojPath
+
+        Log.d("SmolVlmRunner", "Init native with model=$modelPath, mmproj=$mmprojPath")
+
+        // TODO: 나중에 native 구현과 연결
+        nativeInit(
+            modelPath,
+            mmprojPath,
+            config.nCtx,
+            config.nThreads
+        )
+
+        initialized = true
+    }
+
+    /**
+     * 이미지 + 프롬프트로 온디바이스 VLM 실행
+     * - prompt: 텍스트 인스트럭션 (일정/메모 추출용)
+     * - imageBytes: (리사이즈된) 스크린샷 바이트 배열 (PNG/JPEG)
+     */
+    suspend fun run(
+        prompt: String,
+        imageBytes: ByteArray
+    ): String = withContext(Dispatchers.Default) {
+        initIfNeeded()
+        // TODO: 토큰 수/옵션을 더 세밀하게 넘기고 싶으면 config를 풀어서 전달
+        nativeEval(
+            prompt,
+            imageBytes,
+            config.temperature,
+            config.topP,
+            config.maxTokens
+        )
+    }
+
+    // --------------------
+    // JNI Native 함수 시그니처 (구현은 C/C++ 쪽에서)
+    // --------------------
+
+    private external fun nativeInit(
+        modelPath: String,
+        mmprojPath: String,
+        nCtx: Int,
+        nThreads: Int
+    )
+
+    private external fun nativeEval(
+        prompt: String,
+        imageBytes: ByteArray,
+        temperature: Float,
+        topP: Float,
+        maxTokens: Int
+    ): String
 }
