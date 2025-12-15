@@ -1,179 +1,245 @@
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import ast
-from math import erf, sqrt, lgamma
+import torch
+from torch.utils.data import Dataset, DataLoader
 
-# -----------------------------
-# Math helpers
-# -----------------------------
-Z95 = 1.6448536269514722
-Z99 = 2.3263478740408408
+class TitleTopicDataset(Dataset):
+    def __init__(self, df, tokenizer, label2id, max_length=64, title_col="title", label_col="topic"):
+        self.df = df.reset_index(drop=True)
+        self.tok = tokenizer
+        self.label2id = label2id
+        self.max_length = max_length
+        self.title_col = title_col
+        self.label_col = label_col
 
-def lognorm_params_from_median_p95(median, p95):
-    mu = np.log1p(max(median, 0.0))
-    q95 = np.log1p(max(p95, median + 1e-9))
-    sigma = max((q95 - mu) / Z95, 1e-8)
-    return mu, sigma
+    def __len__(self):
+        return len(self.df)
 
-def lognorm_cdf(xs, mu, sigma):
-    # vectorized log-normal CDF under log1p parameterization
-    z = (np.log1p(np.maximum(xs, 0.0)) - mu) / sigma
-    return 0.5 * (1.0 + np.vectorize(erf)(z / sqrt(2.0)))
+    def __getitem__(self, i):
+        title = str(self.df.at[i, self.title_col])
+        label = self.df.at[i, self.label_col]
+        y = self.label2id[label] if not isinstance(label, int) else int(label)
 
-def poisson_cdf(k, lam):
-    k = int(np.floor(k))
-    s = 0.0
-    for i in range(0, k + 1):
-        s += np.exp(-lam) * (lam ** i) / np.math.factorial(i)
-    return min(1.0, s)
+        enc = self.tok(
+            title,
+            truncation=True,
+            padding="max_length",
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+        item = {
+            "input_ids": enc["input_ids"].squeeze(0),
+            "attention_mask": enc["attention_mask"].squeeze(0),
+            "labels": torch.tensor(y, dtype=torch.long),
+            "row_idx": torch.tensor(i, dtype=torch.long),  # 나중에 점수 DF로 다시 붙일 때 유용
+        }
+        return item
 
-def negbin_params_from_mean_var(mean, var):
-    var = max(var, mean + 1e-6)
-    r = (mean * mean) / (var - mean)
-    p = mean / (mean + r)
-    r = max(r, 1e-6)
-    p = min(max(p, 1e-9), 1 - 1e-9)
-    return r, p
+def make_label_maps(df, label_col="topic"):
+    # topic이 문자열이면 label2id 만들기
+    if df[label_col].dtype == "int64" or df[label_col].dtype == "int32":
+        num_labels = int(df[label_col].max()) + 1
+        label2id = {i: i for i in range(num_labels)}
+        id2label = {i: i for i in range(num_labels)}
+        return label2id, id2label, num_labels
 
-def negbin_pmf(k, r, p):
-    # pmf(k) = C(k+r-1, k) * (1-p)^r * p^k
-    return np.exp(lgamma(k + r) - lgamma(r) - lgamma(k + 1) + r * np.log(1 - p) + k * np.log(p))
+    labels = sorted(df[label_col].unique().tolist())
+    label2id = {lab: i for i, lab in enumerate(labels)}
+    id2label = {i: lab for lab, i in label2id.items()}
+    return label2id, id2label, len(labels)
 
-def negbin_cdf(k, mean, var):
-    r, p = negbin_params_from_mean_var(mean, var)
-    k = int(np.floor(k))
-    s = 0.0
-    for i in range(0, k + 1):
-        s += negbin_pmf(i, r, p)
-    return min(1.0, s)
 
-def zip_cdf(k, lam, pi0):
-    if k < 0: return 0.0
-    return pi0 + (1.0 - pi0) * poisson_cdf(k, lam)
 
-def zinb_cdf(k, mean, var, pi0):
-    if k < 0: return 0.0
-    return pi0 + (1.0 - pi0) * negbin_cdf(k, mean, var)
+import torch.nn as nn
 
-# -----------------------------
-# Plotter
-# -----------------------------
-DURATION_SOURCES = {"app","you","web"}
-COUNT_SOURCES    = {"ex","poi","cal","noti"}
+class TopicClassifier(nn.Module):
+    def __init__(self, encoder, num_labels, hidden_size=384, mlp_hidden=384, dropout_p=0.1, use_dropout=True):
+        super().__init__()
+        self.encoder = encoder
 
-def plot_cdf_grid_from_csv(
-    csv_path: str,
-    topics: list,
-    sources: list,
-    *,
-    fallback_color: str = "tab:orange",
-    fallback_linestyle: str = "--",
-    show_legend: bool = True
-):
-    """
-    CSV(컬럼: source,topic,dist_type,parameter,comment,fallback)를 읽어
-    행=topics, 열=sources 격자로 CDF를 그립니다.
-      - prior 있으면 파란 실선
-      - 해당 소스 타입의 fallback 있으면 오렌지 점선으로 overlay
-    """
-    df = pd.read_csv(csv_path)
-    # normalize / parse
-    df["source"]    = df["source"].astype(str)
-    df["topic"]     = df["topic"].astype(str)
-    df["dist_type"] = df["dist_type"].astype(str)
-    df["fallback"]  = df["fallback"].astype(str).str.lower().isin(["true","1","yes"])
-    df["parameter"] = df["parameter"].apply(lambda s: ast.literal_eval(s) if isinstance(s, str) else {})
+        layers = []
+        if use_dropout:
+            layers.append(nn.Dropout(dropout_p))
+        layers += [
+            nn.Linear(hidden_size, mlp_hidden),
+            nn.ReLU(),
+        ]
+        if use_dropout:
+            layers.append(nn.Dropout(dropout_p))
+        layers += [
+            nn.Linear(mlp_hidden, num_labels),
+        ]
+        self.mlp = nn.Sequential(*layers)
 
-    # fallback rows
-    fb_dur = df[(df["source"]=="fallback_duration") & (df["fallback"])]
-    fb_cnt = df[(df["source"]=="fallback_count")   & (df["fallback"])]
-    fb_dur_spec = fb_dur.iloc[0] if len(fb_dur)>0 else None
-    fb_cnt_spec = fb_cnt.iloc[0] if len(fb_cnt)>0 else None
+    def forward(self, input_ids, attention_mask, labels=None):
+        out = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        cls = out.last_hidden_state[:, 0, :]  # [B, 384]
+        logits = self.mlp(cls)
 
-    def _plot_cdf(ax, dist_type, params, is_fallback=False):
-        if dist_type == "lognorm":
-            mu, sigma = lognorm_params_from_median_p95(params["median"], params["p95"])
-            x99 = np.expm1(mu + Z99*sigma)
-            xs = np.linspace(0, max(1.0, x99), 200)
-            ys = lognorm_cdf(xs, mu, sigma)
-            kw = {"linestyle": fallback_linestyle, "color": fallback_color} if is_fallback else {}
-            ax.plot(xs, ys, **kw)
-            ax.set_xlabel("minutes")
+        if labels is None:
+            return logits
+        loss = nn.functional.cross_entropy(logits, labels)
+        return loss, logits
 
-        elif dist_type == "poisson":
-            lam = float(params["lambda"])
-            xmax = int(np.ceil(lam + 4*np.sqrt(max(lam, 1e-6))))
-            xs = np.arange(0, max(1, xmax+1))
-            ys = [poisson_cdf(x, lam) for x in xs]
-            kw = {"linestyle": fallback_linestyle, "color": fallback_color} if is_fallback else {}
-            ax.step(xs, ys, where="post", **kw)
-            ax.set_xlabel("count")
 
-        elif dist_type == "neg_binom":
-            mean, var = float(params["mean"]), float(params["var"])
-            std  = np.sqrt(var)
-            xmax = int(np.ceil(mean + 4*std))
-            xs = np.arange(0, max(1, xmax+1))
-            ys = [negbin_cdf(x, mean, var) for x in xs]
-            kw = {"linestyle": fallback_linestyle, "color": fallback_color} if is_fallback else {}
-            ax.step(xs, ys, where="post", **kw)
-            ax.set_xlabel("count")
 
-        elif dist_type == "zip":
-            lam, pi0 = float(params["lambda"]), float(params["pi0"])
-            xmax = int(np.ceil(lam + 4*np.sqrt(max(lam, 1e-6))))
-            xs = np.arange(0, max(1, xmax+1))
-            ys = [zip_cdf(x, lam, pi0) for x in xs]
-            kw = {"linestyle": fallback_linestyle, "color": fallback_color} if is_fallback else {}
-            ax.step(xs, ys, where="post", **kw)
-            ax.set_xlabel("count")
+import torch
+from torch.optim import AdamW
 
-        elif dist_type == "zinb":
-            mean, var, pi0 = float(params["mean"]), float(params["var"]), float(params["pi0"])
-            std  = np.sqrt(var)
-            xmax = int(np.ceil(mean + 4*std))
-            xs = np.arange(0, max(1, xmax+1))
-            ys = [zinb_cdf(x, mean, var, pi0) for x in xs]
-            kw = {"linestyle": fallback_linestyle, "color": fallback_color} if is_fallback else {}
-            ax.step(xs, ys, where="post", **kw)
-            ax.set_xlabel("count")
+def train_one_epoch(model, loader, optimizer, device, grad_clip=1.0):
+    model.train()
+    total = 0.0
+    for batch in loader:
+        input_ids = batch["input_ids"].to(device)
+        attn = batch["attention_mask"].to(device)
+        labels = batch["labels"].to(device)
 
-        else:
-            ax.text(0.5, 0.5, f"(unknown {dist_type})", ha="center", va="center")
-            ax.set_xticks([]); ax.set_yticks([])
-            return
+        optimizer.zero_grad(set_to_none=True)
+        loss, _ = model(input_ids=input_ids, attention_mask=attn, labels=labels)
+        loss.backward()
 
-        ax.set_ylim(0, 1)
-        ax.set_ylabel("CDF")
+        if grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
-    # grid
-    n_rows, n_cols = len(topics), len(sources)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.6*n_cols, 3.0*n_rows), squeeze=False)
+        optimizer.step()
+        total += float(loss.item())
+    return total / max(1, len(loader))
 
-    for i, topic in enumerate(topics):
-        for j, source in enumerate(sources):
-            ax = axes[i][j]
-            # plot prior (if any)
-            mask = (df["source"]==source) & (df["topic"]==topic) & (~df["fallback"])
-            if mask.any():
-                r = df[mask].iloc[0]
-                _plot_cdf(ax, r["dist_type"], r["parameter"], is_fallback=False)
-                ax.plot([], [], label="prior")  # legend handle
-            else:
-                ax.text(0.5, 0.6, "(no prior)", ha="center", va="center")
+@torch.no_grad()
+def eval_accuracy(model, loader, device):
+    model.eval()
+    correct, total = 0, 0
+    for batch in loader:
+        input_ids = batch["input_ids"].to(device)
+        attn = batch["attention_mask"].to(device)
+        labels = batch["labels"].to(device)
+        logits = model(input_ids=input_ids, attention_mask=attn)
+        pred = logits.argmax(dim=-1)
+        correct += int((pred == labels).sum().item())
+        total += labels.numel()
+    return correct / max(1, total)
 
-            # overlay fallback by source type
-            if source in DURATION_SOURCES and fb_dur_spec is not None:
-                _plot_cdf(ax, fb_dur_spec["dist_type"], fb_dur_spec["parameter"], is_fallback=True)
-                ax.plot([], [], linestyle=fallback_linestyle, color=fallback_color, label="fallback")
-            elif source in COUNT_SOURCES and fb_cnt_spec is not None:
-                _plot_cdf(ax, fb_cnt_spec["dist_type"], fb_cnt_spec["parameter"], is_fallback=True)
-                ax.plot([], [], linestyle=fallback_linestyle, color=fallback_color, label="fallback")
 
-            ax.set_title(f"{source} — {topic}")
-            if show_legend:
-                ax.legend(loc="lower right", fontsize=8)
+import torch.nn.functional as F
 
-    plt.tight_layout()
-    return fig, axes
+def _extract_mlp_layers(mlp: nn.Sequential):
+    # mlp가 [Dropout?, Linear, ReLU, Dropout?, Linear] 형태라고 가정하고 찾아냄
+    lin = [m for m in mlp if isinstance(m, nn.Linear)]
+    relu = next((m for m in mlp if isinstance(m, nn.ReLU)), None)
+    assert len(lin) == 2 and relu is not None, "MLP 구조가 예상과 다릅니다."
+    lin1, lin2 = lin[0], lin[1]
+    return lin1, lin2
+
+@torch.no_grad()
+def batch_distill_scores(model, input_ids, attention_mask, labels):
+    model.eval()
+
+    out = model.encoder(input_ids=input_ids, attention_mask=attention_mask)
+    x = out.last_hidden_state[:, 0, :]  # [B, D]
+
+    lin1, lin2 = _extract_mlp_layers(model.mlp)
+
+    # dropout은 eval에서 꺼지므로 그냥 mlp를 통과시켜도 되지만,
+    # per-sample grad proxy를 위해 z1/a1/logits를 직접 계산
+    z1 = F.linear(x, lin1.weight, lin1.bias)   # [B, H]
+    a1 = F.relu(z1)                            # [B, H]
+    logits = F.linear(a1, lin2.weight, lin2.bias)  # [B, C]
+
+    loss = F.cross_entropy(logits, labels, reduction="none")  # [B]
+
+    p = logits.softmax(dim=-1)
+    y = F.one_hot(labels, num_classes=logits.size(-1)).float()
+    delta2 = (p - y)  # [B, C]
+
+    delta2_norm2 = (delta2 ** 2).sum(dim=-1)  # [B]
+    a1_norm2 = (a1 ** 2).sum(dim=-1)          # [B]
+    x_norm2  = (x ** 2).sum(dim=-1)           # [B]
+
+    # layer2
+    gradW2_norm2 = delta2_norm2 * a1_norm2
+    gradb2_norm2 = delta2_norm2
+
+    # layer1 (ReLU mask)
+    mask = (z1 > 0).to(delta2.dtype)
+    delta1 = (delta2 @ lin2.weight) * mask
+    delta1_norm2 = (delta1 ** 2).sum(dim=-1)
+
+    gradW1_norm2 = delta1_norm2 * x_norm2
+    gradb1_norm2 = delta1_norm2
+
+    grad_score = gradW1_norm2 + gradb1_norm2 + gradW2_norm2 + gradb2_norm2
+    score = loss + 0.1 * torch.sqrt(grad_score + 1e-12)
+
+    return {
+        "loss": loss.cpu(),
+        "grad_score": grad_score.cpu(),
+        "score": score.cpu(),
+        "pred": logits.argmax(dim=-1).cpu(),
+        "conf": p.max(dim=-1).values.cpu(),
+        "cls_emb": x.cpu(),  # (선택) 클러스터링/대표성에 쓰려면 저장
+    }
+
+
+
+from transformers import AutoTokenizer, AutoModel
+from peft import get_peft_model, LoraConfig, TaskType
+
+def run_train_then_score(df_train, df_val, base_model_name, batch_size=64, max_len=64, epochs=1, lr=2e-4,
+                         use_dropout=True, device="cuda"):
+    label2id, id2label, num_labels = make_label_maps(df_train, "topic")
+
+    tok = AutoTokenizer.from_pretrained(base_model_name)
+
+    base = AutoModel.from_pretrained(base_model_name)
+    # LoRA 설정 예시 (타깃 모듈은 모델에 따라 조정 필요)
+    lora_cfg = LoraConfig(
+        task_type=TaskType.FEATURE_EXTRACTION,
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.0,          # LoRA 자체 dropout은 일단 0 추천(분석 안정)
+        target_modules=["q_proj","k_proj","v_proj","o_proj"],  # 모델에 따라 다를 수 있음
+    )
+    encoder = get_peft_model(base, lora_cfg)
+
+    model = TopicClassifier(
+        encoder=encoder,
+        num_labels=num_labels,
+        hidden_size=base.config.hidden_size,  # MiniLM이면 384
+        mlp_hidden=base.config.hidden_size,   # 당신 케이스(384->384->25)
+        dropout_p=0.1,
+        use_dropout=use_dropout,
+    ).to(device)
+
+    ds_tr = TitleTopicDataset(df_train, tok, label2id, max_length=max_len)
+    ds_va = TitleTopicDataset(df_val, tok, label2id, max_length=max_len)
+
+    dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+    dl_va = DataLoader(ds_va, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
+
+    opt = AdamW(model.parameters(), lr=lr)
+
+    for ep in range(epochs):
+        tr_loss = train_one_epoch(model, dl_tr, opt, device)
+        va_acc = eval_accuracy(model, dl_va, device)
+        print(f"epoch {ep+1}/{epochs} | train_loss={tr_loss:.4f} | val_acc={va_acc:.4f}")
+
+    # ---- 점수 산출 (train df 전체에 대해) ----
+    dl_score = DataLoader(ds_tr, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
+    all_rows = []
+    for batch in dl_score:
+        scores = batch_distill_scores(
+            model,
+            batch["input_ids"].to(device),
+            batch["attention_mask"].to(device),
+            batch["labels"].to(device),
+        )
+        row_idx = batch["row_idx"].cpu()
+        for i in range(len(row_idx)):
+            all_rows.append((
+                int(row_idx[i]),
+                float(scores["loss"][i]),
+                float(scores["grad_score"][i]),
+                float(scores["score"][i]),
+                int(scores["pred"][i]),
+                float(scores["conf"][i]),
+            ))
+
+    return model, all_rows, label2id, id2label
