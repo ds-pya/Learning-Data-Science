@@ -1,142 +1,59 @@
-좋습니다. 다음 두 항목을 간단명료하게 핵심만 정리해서 작성합니다.
-
-
----
-
-📌 3. 서비스 동작 (Flow)
-
-아래는 사용자가 측면 버튼을 길게 눌렀을 때부터 일정/메모가 등록되기까지의 핵심 흐름이다.
-
-① 디지털 어시스턴트 트리거
-
-사용자가 측면 버튼을 길게 누름
-
-현재 사용 중인 앱 위에 하단 오버레이 패널 표시
-
-옵션: 캘박(일정) / 멤박(메모) 아이콘 선택
-
-
-② 화면 캡처 및 전처리
-
-선택 즉시 자동 스크린샷 촬영
-
-캡처 이미지는 전용 폴더에 저장
-
-해상도 조절 및 적정 크기로 변환
-
-
-③ 콘텐츠 분석
-
-두 플로우 모두 동일한 분석 파이프라인을 활용:
-
-이미지 → OCR 또는 OpenAI Vision API 전달
-
-LLM이 화면의 의미/내용을 파악하여
-
-일정: 제목/시간/장소 추출
-
-메모: 핵심 정보·요약·분류 태그 추출
-
-
-결과는 구조화된 JSON 형태로 반환
-
-
-④ 사용자 확인 패널
-
-앱 전환 없이 오버레이 패널 내에서 결과 확인/수정
-
-일정은 시작/종료시간·장소·제목 편집 가능
-
-메모는 제목/요약/태그 확인 가능
-
-등록 버튼 지원
-
-
-⑤ 저장
-
-캘박: 삼성 캘린더 API를 통해 직접 일정 등록
-
-멤박: 내부 Room DB에 메모 정보 저장
-
-성공/실패 패널 표시 후 종료
-
-
-
----
-
-📌 4. 시나리오 & 기대효과
-
-📌 시나리오 1 — 결혼식 청첩장 화면
-
-1. 카톡에서 청첩장 이미지를 보고 있음
-
-
-2. 측면버튼 길게 → 캘박 선택
-
-
-3. “홍길동 결혼식 / 5월 11일 토 14:00 / 강남컨벤션홀” 자동 추출
-
-
-4. 수정 후 등록
-
-
-5. 일정이 삼성 캘린더에 자동 저장
-➡ 혈연·지인 약속 입력 시간을 90% 단축
-
-
-
-
----
-
-📌 시나리오 2 — 인스타 맛집 게시물
-
-1. 인스타 탐색 중
-
-
-2. 측면 버튼 → 멤박 선택
-
-
-3. 이미지에서 “성수 / 스테이크 / 평점 요약 / 대표 메뉴” 등 자동 분석
-
-
-4. 메모 DB 저장
-➡ 맛집 스크랩·보관 프로세스 자동화
-
-
-
-
----
-
-📌 시나리오 3 — 웹페이지 전시회 공지
-
-1. 웹에서 전시회 일정 확인
-
-
-2. 캘박 선택 → 날짜·장소 자동 추출
-
-
-3. 일정 등록
-➡ 텍스트 복사·캘린더 이동 없이 1회 행동으로 마무리
-
-
-
-
----
-
-✨ 기대효과 요약
-
-앱 전환 없이 일정·메모 등록 가능한 최초의 시스템
-
-화면 기반 자동 분석으로 입력·편집 부담 대폭 감소
-
-스크린샷 기반 워크플로우를 자동화해 정보 저장률 증가
-
-LLM/VLM 활용으로 레이아웃 변화에도 높은 정확도 유지
-
-향후 on-device 적용 시 개인정보 외부 전송 없이 처리 가능
-
-
-
----
-
-다음은 5. 추가할만한 기능 / 6. 기능 설명(모듈별) 도 이어서 작성해드릴까요?
+data class A11yTextItem(
+    val packageName: String?,
+    val className: String?,
+    val viewId: String?,
+    val text: String?,
+    val contentDesc: String?,
+    val hintText: String?,
+    val bounds: String,
+    val editable: Boolean,
+    val clickable: Boolean,
+    val scrollable: Boolean
+)
+
+fun dumpTextsFromRoot(root: AccessibilityNodeInfo?, pkg: CharSequence?): List<A11yTextItem> {
+    if (root == null) return emptyList()
+    val out = ArrayList<A11yTextItem>(256)
+
+    fun rectToString(node: AccessibilityNodeInfo): String {
+        val r = android.graphics.Rect()
+        node.getBoundsInScreen(r)
+        return "${r.left},${r.top},${r.right},${r.bottom}"
+    }
+
+    fun dfs(node: AccessibilityNodeInfo) {
+        val text = node.text?.toString()?.takeIf { it.isNotBlank() }
+        val cd = node.contentDescription?.toString()?.takeIf { it.isNotBlank() }
+        val hint = try {
+            node.hintText?.toString()?.takeIf { it.isNotBlank() }
+        } catch (e: Throwable) { null }
+
+        // “텍스트 후보가 하나라도 있으면” 기록 (원하면 조건 더 빡세게)
+        if (text != null || cd != null || hint != null) {
+            out.add(
+                A11yTextItem(
+                    packageName = pkg?.toString(),
+                    className = node.className?.toString(),
+                    viewId = node.viewIdResourceName,
+                    text = text,
+                    contentDesc = cd,
+                    hintText = hint,
+                    bounds = rectToString(node),
+                    editable = node.isEditable,
+                    clickable = node.isClickable,
+                    scrollable = node.isScrollable
+                )
+            )
+        }
+
+        for (i in 0 until node.childCount) {
+            node.getChild(i)?.let { child ->
+                dfs(child)
+                child.recycle()
+            }
+        }
+    }
+
+    dfs(root)
+    return out
+}
