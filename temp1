@@ -1,28 +1,237 @@
-import androidx.room.Dao
-import androidx.room.Insert
-import androidx.room.OnConflictStrategy
-import androidx.room.Query
+import android.graphics.Bitmap
+import android.graphics.Rect
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.view.accessibility.AccessibilityNodeInfo
+import androidx.annotation.RequiresApi
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-@Dao
-interface BehaviorSampleDao {
+// 결과 전달용
+data class SavedStateArtifacts(
+    val layoutTextUri: String?,   // file://...
+    val totalTextUri: String?,    // file://...
+    val screenshotUri: String?    // file://...
+)
 
-    @Insert(onConflict = OnConflictStrategy.ABORT)
-    suspend fun insert(sample: BehaviorSampleEntity): Long
+private fun saveState(
+    packageName: String,
+    eventTimeMs: Long,
+    onDone: (SavedStateArtifacts) -> Unit
+) {
+    val root = rootInActiveWindow
+    if (root == null) {
+        // root가 없더라도 스샷은 시도 가능할 수 있으니, 여기서는 텍스트/레이아웃 없이 진행
+        captureScreenshotToFile(packageName, eventTimeMs) { screenshotUri ->
+            onDone(SavedStateArtifacts(null, null, screenshotUri))
+        }
+        return
+    }
 
-    @Query("SELECT * FROM behavior_sample ORDER BY eventTimeMs DESC LIMIT :limit")
-    suspend fun latest(limit: Int = 100): List<BehaviorSampleEntity>
+    // 1) hierarchical layout -> String
+    val layoutDump = buildLayoutDump(root)
 
-    @Query("""
-        SELECT * FROM behavior_sample
-        WHERE packageName = :packageName
-        ORDER BY eventTimeMs DESC
-        LIMIT :limit
-    """)
-    suspend fun latestByPackage(packageName: String, limit: Int = 100): List<BehaviorSampleEntity>
+    // 2) dfs text -> String
+    val totalText = extractTexts(root)
+        .distinct()
+        .joinToString(separator = "\n")
 
-    @Query("""
-        DELETE FROM behavior_sample
-        WHERE eventTimeMs < :beforeMs
-    """)
-    suspend fun deleteOlderThan(beforeMs: Long): Int
+    // root recycle (child는 build/extract에서 recycle 처리)
+    root.recycle()
+
+    // 파일 저장 (layout/text)
+    val layoutUri = writeStringToFile(
+        subDir = "state",
+        fileName = fileName(prefix = "layout", pkg = packageName, ts = eventTimeMs, ext = "txt"),
+        content = layoutDump
+    )
+
+    val textUri = writeStringToFile(
+        subDir = "state",
+        fileName = fileName(prefix = "text", pkg = packageName, ts = eventTimeMs, ext = "txt"),
+        content = totalText
+    )
+
+    // 3) screenshot
+    captureScreenshotToFile(packageName, eventTimeMs) { screenshotUri ->
+        onDone(
+            SavedStateArtifacts(
+                layoutTextUri = layoutUri,
+                totalTextUri = textUri,
+                screenshotUri = screenshotUri
+            )
+        )
+    }
+}
+
+/* -----------------------------
+   (1) Layout dump (hierarchical)
+------------------------------ */
+
+private fun buildLayoutDump(root: AccessibilityNodeInfo): String {
+    val sb = StringBuilder(16_384)
+
+    fun rectStr(node: AccessibilityNodeInfo): String {
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        return "${r.left},${r.top},${r.right},${r.bottom}"
+    }
+
+    fun nodeLabel(node: AccessibilityNodeInfo): String {
+        val cls = node.className?.toString() ?: "null"
+        val vid = node.viewIdResourceName ?: "-"
+        val txt = node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { truncate(it, 40) } ?: "-"
+        val cd = node.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { truncate(it, 40) } ?: "-"
+        return "cls=$cls vid=$vid txt=$txt cd=$cd b=${rectStr(node)} c=${node.isClickable} s=${node.isScrollable} e=${node.isEditable}"
+    }
+
+    fun dfs(node: AccessibilityNodeInfo, depth: Int) {
+        repeat(depth) { sb.append("  ") }
+        sb.appendLine(nodeLabel(node))
+
+        for (i in 0 until node.childCount) {
+            node.getChild(i)?.let { child ->
+                dfs(child, depth + 1)
+                child.recycle()
+            }
+        }
+    }
+
+    dfs(root, 0)
+    return sb.toString()
+}
+
+/* -----------------------------
+   (2) Text extraction (DFS)
+------------------------------ */
+
+private fun extractTexts(root: AccessibilityNodeInfo): List<String> {
+    val out = ArrayList<String>(256)
+
+    fun addIfNotBlank(s: CharSequence?) {
+        val v = s?.toString()?.trim()
+        if (!v.isNullOrEmpty()) out.add(v)
+    }
+
+    fun dfs(node: AccessibilityNodeInfo) {
+        addIfNotBlank(node.text)
+        addIfNotBlank(node.contentDescription)
+        if (Build.VERSION.SDK_INT >= 26) {
+            addIfNotBlank(node.hintText)
+        }
+
+        for (i in 0 until node.childCount) {
+            node.getChild(i)?.let { child ->
+                dfs(child)
+                child.recycle()
+            }
+        }
+    }
+
+    dfs(root)
+    return out
+}
+
+/* -----------------------------
+   (3) Screenshot capture
+   - AccessibilityService.takeScreenshot (API 30+)
+------------------------------ */
+
+private fun captureScreenshotToFile(
+    packageName: String,
+    eventTimeMs: Long,
+    onDone: (String?) -> Unit
+) {
+    if (Build.VERSION.SDK_INT < 30) {
+        onDone(null)
+        return
+    }
+
+    // API 30+: takeScreenshot requires an executor. We'll use main thread handler executor.
+    val executor = MainThreadExecutor()
+
+    // DISPLAY_ID_AUTO = 0 is common; some devices require DISPLAY_ID_DEFAULT (0)
+    @Suppress("DEPRECATION")
+    takeScreenshot(
+        /* displayId = */ 0,
+        executor
+    ) { result ->
+        if (result == null) {
+            onDone(null)
+            return@takeScreenshot
+        }
+
+        val bitmap = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
+        result.hardwareBuffer.close()
+
+        if (bitmap == null) {
+            onDone(null)
+            return@takeScreenshot
+        }
+
+        val uri = writeBitmapToFile(
+            subDir = "state",
+            fileName = fileName(prefix = "shot", pkg = packageName, ts = eventTimeMs, ext = "png"),
+            bitmap = bitmap
+        )
+
+        // wrapHardwareBuffer로 만든 bitmap은 recycle 권장
+        bitmap.recycle()
+
+        onDone(uri)
+    }
+}
+
+/* -----------------------------
+   File helpers
+------------------------------ */
+
+private fun writeStringToFile(subDir: String, fileName: String, content: String): String? {
+    return try {
+        val dir = File(applicationContext.filesDir, subDir).apply { mkdirs() }
+        val file = File(dir, fileName)
+        file.writeText(content)
+        file.toUriString()
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+private fun writeBitmapToFile(subDir: String, fileName: String, bitmap: Bitmap): String? {
+    return try {
+        val dir = File(applicationContext.filesDir, subDir).apply { mkdirs() }
+        val file = File(dir, fileName)
+        FileOutputStream(file).use { fos ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos)
+        }
+        file.toUriString()
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+private fun File.toUriString(): String = "file://${absolutePath}"
+
+private fun fileName(prefix: String, pkg: String, ts: Long, ext: String): String {
+    val safePkg = pkg.replace(".", "_")
+    val time = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date(ts))
+    return "${prefix}_${safePkg}_${time}.${ext}"
+}
+
+private fun truncate(s: String, max: Int): String =
+    if (s.length <= max) s else s.substring(0, max) + "…"
+
+/* -----------------------------
+   Minimal main-thread executor
+------------------------------ */
+
+private class MainThreadExecutor : java.util.concurrent.Executor {
+    private val handler = Handler(Looper.getMainLooper())
+    override fun execute(command: Runnable) {
+        handler.post(command)
+    }
 }
