@@ -1,39 +1,28 @@
-import androidx.room.Entity
-import androidx.room.Index
-import androidx.room.PrimaryKey
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
 
-@Entity(
-    tableName = "behavior_sample",
-    indices = [
-        Index(value = ["eventTimeMs"]),
-        Index(value = ["packageName", "eventTimeMs"])
-    ]
-)
-data class BehaviorSampleEntity(
-    @PrimaryKey(autoGenerate = true)
-    val id: Long = 0L,
+@Dao
+interface BehaviorSampleDao {
 
-    // 당신 룰의 트리거 시점
-    val eventTimeMs: Long,      // event.eventTime (wall clock)
-    val packageName: String,
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(sample: BehaviorSampleEntity): Long
 
-    // 저장하는 "근거 텍스트" (A11y 덤프)
-    val totalText: String?,     // 길면 null로 두고 아래 메타만 저장해도 됨(선택)
-    val totalTextLen: Int,
-    val totalTextHash: Int,
+    @Query("SELECT * FROM behavior_sample ORDER BY eventTimeMs DESC LIMIT :limit")
+    suspend fun latest(limit: Int = 100): List<BehaviorSampleEntity>
 
-    // 스크린샷: 파일/콘텐츠 URI만
-    val screenshotUri: String?, // "file://..." 또는 "content://..."
-    val screenshotSha256: String?, // optional (중복 방지용)
-    val screenshotW: Int?,       // optional
-    val screenshotH: Int?,       // optional
+    @Query("""
+        SELECT * FROM behavior_sample
+        WHERE packageName = :packageName
+        ORDER BY eventTimeMs DESC
+        LIMIT :limit
+    """)
+    suspend fun latestByPackage(packageName: String, limit: Int = 100): List<BehaviorSampleEntity>
 
-    // VLM 한 줄 설명
-    val vlmDescription: String?, // "유튜브에서 영상 시청 중"
-    val vlmModel: String?,       // optional
-    val vlmPromptVersion: String?, // optional
-
-    // 룰 디버그/분석용(강추)
-    val triggerType: Int,        // 1=PKG_CHANGED, 2=WINDOW_STATE_CHANGED_10
-    val windowStateChangedCount: Int // triggerType==2일 때 10
-)
+    @Query("""
+        DELETE FROM behavior_sample
+        WHERE eventTimeMs < :beforeMs
+    """)
+    suspend fun deleteOlderThan(beforeMs: Long): Int
+}
