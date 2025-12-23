@@ -1,59 +1,39 @@
-data class A11yTextItem(
-    val packageName: String?,
-    val className: String?,
-    val viewId: String?,
-    val text: String?,
-    val contentDesc: String?,
-    val hintText: String?,
-    val bounds: String,
-    val editable: Boolean,
-    val clickable: Boolean,
-    val scrollable: Boolean
+import androidx.room.Entity
+import androidx.room.Index
+import androidx.room.PrimaryKey
+
+@Entity(
+    tableName = "behavior_sample",
+    indices = [
+        Index(value = ["eventTimeMs"]),
+        Index(value = ["packageName", "eventTimeMs"])
+    ]
 )
+data class BehaviorSampleEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0L,
 
-fun dumpTextsFromRoot(root: AccessibilityNodeInfo?, pkg: CharSequence?): List<A11yTextItem> {
-    if (root == null) return emptyList()
-    val out = ArrayList<A11yTextItem>(256)
+    // 당신 룰의 트리거 시점
+    val eventTimeMs: Long,      // event.eventTime (wall clock)
+    val packageName: String,
 
-    fun rectToString(node: AccessibilityNodeInfo): String {
-        val r = android.graphics.Rect()
-        node.getBoundsInScreen(r)
-        return "${r.left},${r.top},${r.right},${r.bottom}"
-    }
+    // 저장하는 "근거 텍스트" (A11y 덤프)
+    val totalText: String?,     // 길면 null로 두고 아래 메타만 저장해도 됨(선택)
+    val totalTextLen: Int,
+    val totalTextHash: Int,
 
-    fun dfs(node: AccessibilityNodeInfo) {
-        val text = node.text?.toString()?.takeIf { it.isNotBlank() }
-        val cd = node.contentDescription?.toString()?.takeIf { it.isNotBlank() }
-        val hint = try {
-            node.hintText?.toString()?.takeIf { it.isNotBlank() }
-        } catch (e: Throwable) { null }
+    // 스크린샷: 파일/콘텐츠 URI만
+    val screenshotUri: String?, // "file://..." 또는 "content://..."
+    val screenshotSha256: String?, // optional (중복 방지용)
+    val screenshotW: Int?,       // optional
+    val screenshotH: Int?,       // optional
 
-        // “텍스트 후보가 하나라도 있으면” 기록 (원하면 조건 더 빡세게)
-        if (text != null || cd != null || hint != null) {
-            out.add(
-                A11yTextItem(
-                    packageName = pkg?.toString(),
-                    className = node.className?.toString(),
-                    viewId = node.viewIdResourceName,
-                    text = text,
-                    contentDesc = cd,
-                    hintText = hint,
-                    bounds = rectToString(node),
-                    editable = node.isEditable,
-                    clickable = node.isClickable,
-                    scrollable = node.isScrollable
-                )
-            )
-        }
+    // VLM 한 줄 설명
+    val vlmDescription: String?, // "유튜브에서 영상 시청 중"
+    val vlmModel: String?,       // optional
+    val vlmPromptVersion: String?, // optional
 
-        for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { child ->
-                dfs(child)
-                child.recycle()
-            }
-        }
-    }
-
-    dfs(root)
-    return out
-}
+    // 룰 디버그/분석용(강추)
+    val triggerType: Int,        // 1=PKG_CHANGED, 2=WINDOW_STATE_CHANGED_10
+    val windowStateChangedCount: Int // triggerType==2일 때 10
+)
