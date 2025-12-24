@@ -1,117 +1,90 @@
-/**
- * WindowContentState
- *
- * 목적:
- * - TYPE_WINDOW_CONTENT_CHANGED 신호만 받아서
- *   1) quiet(조용해짐) 시점 판단
- *   2) noisy(계속 흔들림) 구간 판단
- *   3) 트리거(로깅) 시점만 결정
- *
- * 특징:
- * - 텍스트/스크린샷/유사도/LLM/VLM 없음 (여기서는 "언제 트리거할지"만)
- * - packageName 하드코딩 없음
- * - "한 앱(package) 안에서 quiet gap이 생긴 경우에만" 트리거 허용
- *
- * 사용 패턴:
- * - onSignal(pkg, now) 호출: 이벤트 들어올 때마다 호출
- * - alarm 예약: onSignal이 반환하는 nextAlarmAt으로 500ms 뒤 알람 예약
- * - onAlarm(now) 호출: 예약된 시점에 호출, Trigger? 반환 (null이면 로깅 안 함)
- */
 class WindowContentState(
     private val quietGapMs: Long = 500L,
-
-    // "최근 30초간 지속적으로 500ms 내 신호가 들어왔다"를 모델링:
-    // noisyStartAt != null 인 동안에는 "quiet gap이 한 번도 없었다"는 뜻으로 운용.
     private val noisyEnterWindowMs: Long = 30_000L
 ) {
-
     enum class Mode { QUIET, NOISY }
 
     data class Trigger(
         val ts: Long,
         val packageName: String,
         val mode: Mode,
-        val reason: String
+        val reason: String // "quiet_gap" | "quiet_gap_after_noisy" | "noisy_enter"
     )
 
     private var mode: Mode = Mode.QUIET
 
-    // last signal info
     private var lastSignalAt: Long = 0L
     private var lastPackage: String? = null
 
-    // alarm scheduling hint
+    // next alarm absolute time (epoch ms). 0 means no alarm pending.
     private var nextAlarmAt: Long = 0L
     private var scheduledPackage: String? = null
 
-    // noisy tracking
-    // noisyStartAt: "quiet gap 없이 흔들리기 시작한 시점"
+    // Noisy tracking: "quiet gap 없이 흔들리기 시작한 시점"
     private var noisyStartAt: Long? = null
     private var noisyEntered: Boolean = false
-    private var noisyEntryTriggered: Boolean = false
+    private var noisyEnterTriggered: Boolean = false
 
-    // session/app-switch handling
-    // 패키지가 바뀐 직후의 quiet gap 트리거를 막기 위해
+    // 앱 전환 경계에서 quiet 트리거를 막기 위한 플래그
     private var packageChangedSinceLastQuiet: Boolean = false
 
     /**
-     * CONTENT_CHANGED 신호 들어올 때마다 호출
-     * @return nextAlarmAt (0이면 알람 예약할 필요 없음)
+     * signal = (TYPE_WINDOW_CONTENT_CHANGED) after filtering
+     * @return nextAlarmAt (absolute epoch ms) to schedule onAlarm().
      */
     fun onSignal(packageName: String, now: Long): Long {
-        // 패키지 전환 감지
+        // package switch handling
         val prevPkg = lastPackage
         if (prevPkg != null && prevPkg != packageName) {
             packageChangedSinceLastQuiet = true
-            // noisy는 앱별로 새로 시작하는 게 안전
+            // 전환 시 noisy 리셋
             resetNoisy()
             mode = Mode.QUIET
         }
 
-        // 마지막 신호 갱신
         lastPackage = packageName
         lastSignalAt = now
 
-        // 알람 예약 정보 갱신 (quietGap 이후에 onAlarm에서 판정)
+        // schedule alarm at quiet boundary
         scheduledPackage = packageName
         nextAlarmAt = now + quietGapMs
         return nextAlarmAt
     }
 
     /**
-     * 예약된 시점(대개 lastSignalAt + quietGapMs)에 호출
-     * - quiet gap 성립 시: QUIET 트리거 또는 NOISY 종료 처리
-     * - quiet gap 미성립 시: (계속 흔들림) NOISY 진입 판단
+     * Call at (or after) nextAlarmAt.
+     * Returns Trigger if logging should happen, otherwise null.
      */
     fun onAlarm(now: Long): Trigger? {
-        val pkgAtSchedule = scheduledPackage ?: return null
+        val schedPkg = scheduledPackage ?: return null
         val lastPkg = lastPackage ?: return null
 
-        // 1) quiet gap 성립 여부
-        val quietOk = (now - lastSignalAt) >= quietGapMs
-        if (quietOk) {
-            // "한 앱 안에서 gap이 발생했을 때만 분석" 조건:
-            // - 스케줄 당시 패키지와 현재 lastPackage가 같아야 함
-            // - 최근에 패키지 변경이 있었다면(전환 경계) 이번 quiet 트리거는 스킵
-            val samePkg = (pkgAtSchedule == lastPkg)
-            if (!samePkg || packageChangedSinceLastQuiet) {
-                // quiet는 됐지만 전환 경계로 판단 → 트리거 금지
-                // quiet를 만났으니 전환 플래그는 해제
-                packageChangedSinceLastQuiet = false
+        // alarm fired too early (drift) -> ignore
+        if (nextAlarmAt != 0L && now < nextAlarmAt) return null
 
-                // noisy 상태였다면 종료 처리만 해줌
-                if (mode == Mode.NOISY) {
+        val quietOk = (now - lastSignalAt) >= quietGapMs
+
+        if (quietOk) {
+            // quiet occurred: noisy ends if it was noisy
+            val wasNoisy = (mode == Mode.NOISY)
+
+            // clear alarm; next signal will set it again
+            nextAlarmAt = 0L
+
+            // if package switched during this session, skip analysis even if quiet
+            val samePkg = (schedPkg == lastPkg)
+            if (!samePkg || packageChangedSinceLastQuiet) {
+                packageChangedSinceLastQuiet = false
+                if (wasNoisy) {
                     mode = Mode.QUIET
                     resetNoisy()
                 }
                 return null
             }
 
-            // 전환 경계가 아니라 "같은 앱 내 quiet gap"
             packageChangedSinceLastQuiet = false
 
-            return if (mode == Mode.NOISY) {
-                // NOISY였는데 quiet가 생김 → NOISY 종료 + (선택) quiet 트리거
+            return if (wasNoisy) {
                 mode = Mode.QUIET
                 resetNoisy()
                 Trigger(ts = now, packageName = lastPkg, mode = Mode.QUIET, reason = "quiet_gap_after_noisy")
@@ -120,36 +93,37 @@ class WindowContentState(
             }
         }
 
-        // 2) quiet gap이 아니면: 계속 흔들리는 중
-        // noisyStartAt 운용:
-        // - quiet gap이 한번도 생기지 않은 상태가 길어지면 NOISY로 전환
+        // not quiet: still noisy-ish; check NOISY enter condition
+        // set noisyStartAt when we first observe "not quiet" at alarm time
         val ns = noisyStartAt
         if (ns == null) {
-            // 흔들리기 시작한 첫 지점 기록
             noisyStartAt = now
             noisyEntered = false
-            noisyEntryTriggered = false
+            noisyEnterTriggered = false
             return null
         }
 
-        // noisy 진입 판단: 흔들림이 noisyEnterWindowMs 이상 지속
         if (!noisyEntered && (now - ns) >= noisyEnterWindowMs) {
             mode = Mode.NOISY
             noisyEntered = true
 
-            // noisy 진입 시점에서 "분석(로깅) 1회" 수행
-            // 단, 전환 경계였다면 스킵(안전)
-            if (!packageChangedSinceLastQuiet && lastPkg == pkgAtSchedule) {
-                noisyEntryTriggered = true
-                return Trigger(ts = now, packageName = lastPkg, mode = Mode.NOISY, reason = "noisy_enter")
+            // noisy enter: trigger once
+            if (!noisyEnterTriggered) {
+                noisyEnterTriggered = true
+
+                // 전환 경계면 스킵
+                if (!packageChangedSinceLastQuiet && schedPkg == lastPkg) {
+                    return Trigger(ts = now, packageName = lastPkg, mode = Mode.NOISY, reason = "noisy_enter")
+                }
             }
         }
 
-        // NOISY 모드에서는 quiet gap이 생길 때까지 추가 트리거 금지(요구사항)
+        // NOISY 동안 추가 트리거 금지 (quiet 생길 때까지)
         return null
     }
 
     fun getMode(): Mode = mode
+    fun getNextAlarmAt(): Long = nextAlarmAt
 
     fun resetAll() {
         mode = Mode.QUIET
@@ -164,6 +138,6 @@ class WindowContentState(
     private fun resetNoisy() {
         noisyStartAt = null
         noisyEntered = false
-        noisyEntryTriggered = false
+        noisyEnterTriggered = false
     }
 }
