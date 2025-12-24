@@ -1,175 +1,300 @@
-import android.graphics.Bitmap
-import android.graphics.Rect
-import android.os.Build
-import android.os.Environment
-import android.view.accessibility.AccessibilityNodeInfo
-import java.io.File
-import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-
-data class SavedStatePaths(
-    val dirPath: String,
-    val screenshotPath: String?,
-    val layoutDumpPath: String?,
-    val totalTextPath: String?
-)
-
 /**
- * 저장 규칙:
- * - <app>/files/Download/contextlens/yyyyMMdd_HHmmss_SSS/
- *   - screenshot.jpg (downscale + jpeg)
- *   - layoutdump.txt
- *   - totaltext.txt
+ * WindowContentStateRepository
+ *
+ * 목표:
+ * - TYPE_WINDOW_CONTENT_CHANGED 이벤트만으로 "캡처 예약 여부"와 "스냅샷 중복/변화 판정"을 한다.
+ * - 실제 postDelayed/스케줄링은 바깥(EventHandler)이 수행한다. (Repo는 '언제/해야하나'만 결정)
+ *
+ * 사용 흐름:
+ * 1) onContentChanged(windowId, pkg, now) -> CapturePlan
+ *    - Schedule(afterMs)면 EventHandler가 postDelayed로 captureAndProcess(...) 실행
+ *
+ * 2) 캡처 후 EvidenceLite + digest 생성 -> onSnapshot(...) -> SnapshotDecision
+ *    - Ignore / EmitWithoutLLM / RequestLLM 중 하나 반환
  */
-private fun saveStateToDownloadsContextLens(
-    eventTimeMs: Long,
-    packageName: String,
-    // 스크린샷은 외부에서 캡쳐해 bitmap으로 넘기거나, null이면 스킵
-    screenshotBitmap: Bitmap?,
-    // root는 rootInActiveWindow를 넘겨주세요(서비스 내부에서만 가능)
-    root: AccessibilityNodeInfo?
-): SavedStatePaths {
-    val tsFolder = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date(eventTimeMs))
+object WindowContentStateRepository {
 
-    val baseDir = File(
-        applicationContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
-        "contextlens"
-    )
-    val runDir = File(baseDir, tsFolder).apply { mkdirs() }
+    // ---------- Public API ----------
 
-    // (1) layoutdump
-    val layoutDumpPath = root?.let {
-        val layoutDump = buildLayoutDump(it)
-        writeText(File(runDir, "layoutdump.txt"), layoutDump)
+    sealed class CapturePlan {
+        data object Ignore : CapturePlan()
+        data class Schedule(val afterMs: Long) : CapturePlan()
     }
 
-    // (2) totaltext
-    val totalTextPath = root?.let {
-        val totalText = extractTexts(it).distinct().joinToString("\n")
-        writeText(File(runDir, "totaltext.txt"), totalText)
+    sealed class SnapshotDecision {
+        data object Ignore : SnapshotDecision()
+
+        /**
+         * LLM 없이도 샘플을 남기고 싶을 때(예: 변화는 있는데 쿨다운/정보부족)
+         * actionHint는 "unknown" 같은 기본값이어도 됩니다.
+         */
+        data class EmitWithoutLLM(
+            val actionHint: String = "unknown",
+            val confidence: Float = 0.2f
+        ) : SnapshotDecision()
+
+        /**
+         * LLM 분석 요청.
+         * EventHandler가 비동기로 LLM 호출 후 결과를 다시 repo에 feed(선택)하거나 바로 저장하면 됩니다.
+         */
+        data class RequestLLM(
+            val windowId: Int,
+            val packageName: String,
+            val digest: String,
+            val confidenceHint: Float = 0.6f
+        ) : SnapshotDecision()
     }
 
-    // (3) screenshot (용량 고려: 리사이즈 + JPEG)
-    val screenshotPath = screenshotBitmap?.let { bmp ->
-        val resized = downscaleBitmap(bmp, maxLongSide = 1080)  // 필요 시 720/1440 등 조절
-        val outFile = File(runDir, "screenshot.jpg")
-        writeJpeg(outFile, resized, quality = 80)              // 70~85 선 추천
-    }
-
-    return SavedStatePaths(
-        dirPath = runDir.absolutePath,
-        screenshotPath = screenshotPath,
-        layoutDumpPath = layoutDumpPath,
-        totalTextPath = totalTextPath
-    )
-}
-
-/* -----------------------------
-   Helpers: write files
------------------------------- */
-
-private fun writeText(file: File, text: String): String? {
-    return try {
-        file.writeText(text)
-        file.absolutePath
-    } catch (_: Throwable) {
-        null
-    }
-}
-
-private fun writeJpeg(file: File, bitmap: Bitmap, quality: Int): String? {
-    return try {
-        FileOutputStream(file).use { fos ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(0, 100), fos)
+    data class EvidenceLite(
+        val packageName: String,
+        val topTexts: List<String>,   // 정규화된 상위 텍스트 K개
+        val ctaTexts: List<String>,   // 클릭 가능/버튼으로 보이는 텍스트 K개
+        val hints: Map<String, Boolean> = emptyMap() // hasEditText 등
+    ) {
+        fun tokenSet(): Set<String> {
+            // 아주 가벼운 토큰화: 공백 기준 + 짧은 토큰 제거
+            return (topTexts + ctaTexts)
+                .flatMap { it.split(' ') }
+                .map { it.trim() }
+                .filter { it.length >= 2 }
+                .toSet()
         }
-        file.absolutePath
-    } catch (_: Throwable) {
-        null
-    }
-}
 
-/* -----------------------------
-   Helpers: downscale bitmap
------------------------------- */
-
-private fun downscaleBitmap(src: Bitmap, maxLongSide: Int): Bitmap {
-    val w = src.width
-    val h = src.height
-    val longSide = maxOf(w, h)
-    if (longSide <= maxLongSide) return src
-
-    val scale = maxLongSide.toFloat() / longSide.toFloat()
-    val nw = (w * scale).toInt().coerceAtLeast(1)
-    val nh = (h * scale).toInt().coerceAtLeast(1)
-    return Bitmap.createScaledBitmap(src, nw, nh, true)
-}
-
-/* -----------------------------
-   (1) Layout dump (hierarchical)
------------------------------- */
-
-private fun buildLayoutDump(root: AccessibilityNodeInfo): String {
-    val sb = StringBuilder(16_384)
-
-    fun rectStr(node: AccessibilityNodeInfo): String {
-        val r = Rect()
-        node.getBoundsInScreen(r)
-        return "${r.left},${r.top},${r.right},${r.bottom}"
+        fun totalCharCount(): Int = (topTexts.sumOf { it.length } + ctaTexts.sumOf { it.length })
     }
 
-    fun nodeLabel(node: AccessibilityNodeInfo): String {
-        val cls = node.className?.toString() ?: "null"
-        val vid = node.viewIdResourceName ?: "-"
-        val txt = node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { truncate(it, 40) } ?: "-"
-        val cd = node.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { truncate(it, 40) } ?: "-"
-        return "cls=$cls vid=$vid txt=$txt cd=$cd b=${rectStr(node)} c=${node.isClickable} s=${node.isScrollable} e=${node.isEditable}"
+    /** 외부에서 호출: content changed 들어왔을 때 캡처 예약 여부 판단 */
+    fun onContentChanged(windowId: Int, packageName: String, timestamp: Long): CapturePlan {
+        gcOldStates(timestamp)
+
+        val st = states.getOrPut(windowId) { WindowState(windowId = windowId) }
+
+        // package 갱신
+        st.packageName = packageName
+
+        // 초고빈도 스파이크 컷: 너무 짧은 간격은 무시
+        val dt = timestamp - st.lastEventAt
+        if (dt in 0 until MIN_EVENT_GAP_MS) {
+            st.lastEventAt = timestamp
+            return CapturePlan.Ignore
+        }
+
+        st.lastEventAt = timestamp
+        st.burstCount += 1
+
+        // 이미 최근에 스케줄을 반환했더라도,
+        // EventHandler가 postDelayed를 "취소 후 재등록"할 것이므로 항상 Schedule을 반환해도 됩니다.
+        // 다만 지나치게 반환하면 핸들러 취소/등록이 잦아져서,
+        // 일정 간격 내에는 Ignore로 줄이는 옵션을 둡니다.
+        if (timestamp - st.lastScheduleAt < MIN_SCHEDULE_GAP_MS) {
+            return CapturePlan.Ignore
+        }
+
+        st.lastScheduleAt = timestamp
+        return CapturePlan.Schedule(afterMs = QUIET_PERIOD_MS)
     }
 
-    fun dfs(node: AccessibilityNodeInfo, depth: Int) {
-        repeat(depth) { sb.append("  ") }
-        sb.appendLine(nodeLabel(node))
-        for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { child ->
-                dfs(child, depth + 1)
-                child.recycle()
+    /** 외부에서 호출: quiet period 이후 캡처 결과(증거+digest)가 생겼을 때 변화 판정 */
+    fun onSnapshot(
+        windowId: Int,
+        packageName: String,
+        digest: String,
+        evidence: EvidenceLite,
+        timestamp: Long
+    ): SnapshotDecision {
+        gcOldStates(timestamp)
+
+        val st = states.getOrPut(windowId) { WindowState(windowId = windowId) }
+        st.packageName = packageName
+
+        // 아직 quiet period가 충족 안 됐으면 무시(이 경우는 EventHandler가 예약을 너무 빨리 실행한 것)
+        val quietOk = (timestamp - st.lastEventAt) >= QUIET_PERIOD_MS
+        if (!quietOk) return SnapshotDecision.Ignore
+
+        // burst가 너무 작으면(의미 있는 변화 아닐 가능성) 무시
+        if (st.burstCount < MIN_BURST_COUNT) {
+            st.burstCount = 0
+            return SnapshotDecision.Ignore
+        }
+
+        // 최근 digest 동일이면 변화 없음
+        if (digest == st.lastDigest) {
+            st.burstCount = 0
+            return SnapshotDecision.Ignore
+        }
+
+        // (선택) 토큰 유사도 체크: 너무 비슷하면 skip
+        val sim = if (st.lastTokenSet.isNotEmpty()) {
+            jaccard(st.lastTokenSet, evidence.tokenSet())
+        } else 0.0
+
+        if (sim >= SIMILARITY_THRESHOLD) {
+            // 거의 같은 화면으로 보고 skip
+            st.lastDigest = digest
+            st.lastTokenSet = evidence.tokenSet()
+            st.lastCapturedAt = timestamp
+            st.burstCount = 0
+            return SnapshotDecision.Ignore
+        }
+
+        // 여기까지 왔으면 "새 컨텐츠"로 인정
+        st.lastDigest = digest
+        st.lastTokenSet = evidence.tokenSet()
+        st.lastCapturedAt = timestamp
+        st.burstCount = 0
+
+        // LLM 호출 게이트
+        val decision = decideLLM(windowId, packageName, digest, evidence, timestamp)
+        if (decision is SnapshotDecision.RequestLLM) {
+            // 캐시 등록은 LLM 결과 이후에 해도 되고, 지금 'inflight'로 등록해도 됩니다.
+            // 여기서는 inflight로 등록해서 중복 호출을 줄입니다.
+            llmInflight.add(cacheKey(packageName, digest))
+        }
+        return decision
+    }
+
+    /** (선택) LLM 결과를 캐시에 넣어 재사용 */
+    fun onLlmResult(
+        packageName: String,
+        digest: String,
+        action: String,
+        confidence: Float,
+        timestamp: Long
+    ) {
+        val key = cacheKey(packageName, digest)
+        llmInflight.remove(key)
+        llmCache.put(key, LlmResult(action, confidence, timestamp))
+        globalLastLlmAt = timestamp
+    }
+
+    /** (선택) LLM 요청 실패/취소 시 inflight 해제 */
+    fun onLlmFailed(packageName: String, digest: String) {
+        llmInflight.remove(cacheKey(packageName, digest))
+    }
+
+    // ---------- Internal ----------
+
+    private data class WindowState(
+        val windowId: Int,
+        var packageName: String? = null,
+
+        var lastEventAt: Long = 0L,
+        var burstCount: Int = 0,
+
+        var lastScheduleAt: Long = 0L,
+
+        var lastCapturedAt: Long = 0L,
+        var lastDigest: String? = null,
+        var lastTokenSet: Set<String> = emptySet()
+    )
+
+    private data class LlmResult(
+        val action: String,
+        val confidence: Float,
+        val at: Long
+    )
+
+    private val states = HashMap<Int, WindowState>()
+
+    // 매우 간단한 LRU 캐시 (package+digest -> action)
+    private val llmCache = object : LinkedHashMap<String, LlmResult>(LLM_CACHE_MAX * 2, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LlmResult>?): Boolean {
+            return size > LLM_CACHE_MAX
+        }
+    }
+
+    private val llmInflight = HashSet<String>()
+    private var globalLastLlmAt: Long = 0L
+
+    private fun decideLLM(
+        windowId: Int,
+        packageName: String,
+        digest: String,
+        evidence: EvidenceLite,
+        timestamp: Long
+    ): SnapshotDecision {
+        val key = cacheKey(packageName, digest)
+
+        // 1) 캐시 히트면 LLM 불필요 (원하면 여기서 EmitWithoutLLM 대신 "cached action"을 반환해도 됨)
+        llmCache[key]?.let {
+            return SnapshotDecision.EmitWithoutLLM(actionHint = it.action, confidence = it.confidence)
+        }
+
+        // inflight면 중복 호출 방지
+        if (llmInflight.contains(key)) {
+            return SnapshotDecision.EmitWithoutLLM(actionHint = "unknown", confidence = 0.2f)
+        }
+
+        // 2) 쿨다운
+        if (timestamp - globalLastLlmAt < LLM_COOLDOWN_MS) {
+            return SnapshotDecision.EmitWithoutLLM(actionHint = "unknown", confidence = 0.2f)
+        }
+
+        // 3) 정보량 부족
+        if (evidence.totalCharCount() < MIN_EVIDENCE_CHARS) {
+            return SnapshotDecision.EmitWithoutLLM(actionHint = "unknown", confidence = 0.15f)
+        }
+
+        // 4) 중요 키워드가 있으면 LLM 허용 (원하시면 여기 리스트를 더 정교하게)
+        val important = containsImportantCta(evidence)
+        if (!important) {
+            // 중요도가 낮으면 일단 LLM 없이 샘플만 저장(혹은 완전 ignore로 바꿔도 됨)
+            return SnapshotDecision.EmitWithoutLLM(actionHint = "unknown", confidence = 0.2f)
+        }
+
+        return SnapshotDecision.RequestLLM(
+            windowId = windowId,
+            packageName = packageName,
+            digest = digest,
+            confidenceHint = 0.6f
+        )
+    }
+
+    private fun containsImportantCta(evidence: EvidenceLite): Boolean {
+        val hay = (evidence.ctaTexts + evidence.topTexts).joinToString(" ")
+        return IMPORTANT_KEYWORDS.any { hay.contains(it, ignoreCase = true) }
+    }
+
+    private fun cacheKey(packageName: String, digest: String): String = "$packageName|$digest"
+
+    private fun jaccard(a: Set<String>, b: Set<String>): Double {
+        if (a.isEmpty() && b.isEmpty()) return 1.0
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+        val inter = a.intersect(b).size.toDouble()
+        val uni = a.union(b).size.toDouble()
+        return if (uni == 0.0) 0.0 else inter / uni
+    }
+
+    private fun gcOldStates(now: Long) {
+        // 오래된 window state 정리
+        val it = states.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            val st = e.value
+            if (now - st.lastEventAt > STATE_TTL_MS) {
+                it.remove()
             }
         }
+        // inflight도 너무 오래된 건 정리할 수 있는데,
+        // 여기서는 단순히 TTL 기반으로 뺄 수도 있습니다(생략).
     }
 
-    dfs(root, 0)
-    return sb.toString()
+    // ---------- Tunables (초기 추천값) ----------
+    private const val QUIET_PERIOD_MS = 300L          // 이벤트 안정화 대기
+    private const val MIN_BURST_COUNT = 2             // 의미 변화로 보려면 최소 이벤트 수
+    private const val MIN_EVENT_GAP_MS = 40L          // 40ms 이내 폭주 이벤트 컷
+    private const val MIN_SCHEDULE_GAP_MS = 80L       // schedule 반환 너무 잦으면 컷
+    private const val SIMILARITY_THRESHOLD = 0.85     // 토큰 유사도 높으면 동일 화면 취급
+
+    private const val LLM_COOLDOWN_MS = 10_000L
+    private const val MIN_EVIDENCE_CHARS = 60
+    private const val LLM_CACHE_MAX = 500
+
+    private const val STATE_TTL_MS = 10 * 60 * 1000L  // 10분 동안 이벤트 없으면 state 제거
+
+    private val IMPORTANT_KEYWORDS = listOf(
+        "결제", "구매", "예약", "예매", "주문", "송금", "이체", "전송",
+        "확인", "다음", "동의", "가입", "완료",
+        "pay", "checkout", "buy", "book", "order", "send", "confirm", "next"
+    )
 }
-
-/* -----------------------------
-   (2) Text extraction (DFS)
------------------------------- */
-
-private fun extractTexts(root: AccessibilityNodeInfo): List<String> {
-    val out = ArrayList<String>(256)
-
-    fun addIfNotBlank(s: CharSequence?) {
-        val v = s?.toString()?.trim()
-        if (!v.isNullOrEmpty()) out.add(v)
-    }
-
-    fun dfs(node: AccessibilityNodeInfo) {
-        addIfNotBlank(node.text)
-        addIfNotBlank(node.contentDescription)
-        if (Build.VERSION.SDK_INT >= 26) addIfNotBlank(node.hintText)
-
-        for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { child ->
-                dfs(child)
-                child.recycle()
-            }
-        }
-    }
-
-    dfs(root)
-    return out
-}
-
-private fun truncate(s: String, max: Int): String =
-    if (s.length <= max) s else s.substring(0, max) + "…"
