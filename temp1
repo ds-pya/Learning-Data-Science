@@ -1,51 +1,37 @@
-import android.graphics.Rect
+import android.accessibilityservice.AccessibilityService
+import android.graphics.Bitmap
 import android.os.Build
-import android.view.accessibility.AccessibilityNodeInfo
+import android.view.Display
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import java.util.concurrent.Executor
+import android.os.Handler
+import android.os.Looper
 
-// AccessibilityService 안에서 호출한다고 가정
-private fun dumpRootTreeAndAllTexts(rootNode: AccessibilityNodeInfo): Pair<String, String> {
-    val treeSb = StringBuilder(16_384)
-    val textSb = StringBuilder(16_384)
+@RequiresApi(Build.VERSION_CODES.R)
+suspend fun takeScreenshot(service: AccessibilityService): Bitmap? =
+    suspendCancellableCoroutine { cont ->
 
-    fun rectStr(node: AccessibilityNodeInfo): String {
-        val r = Rect()
-        node.getBoundsInScreen(r)
-        return "${r.left},${r.top},${r.right},${r.bottom}"
-    }
+        val executor = Executor { Handler(Looper.getMainLooper()).post(it) }
 
-    fun dfs(node: AccessibilityNodeInfo, depth: Int) {
-        // 1) 트리 덤프 (hierarchical)
-        repeat(depth) { treeSb.append("  ") }
-        treeSb.append("cls=").append(node.className ?: "-")
-            .append(" id=").append(node.viewIdResourceName ?: "-")
-            .append(" text=").append(node.text ?: "-")
-            .append(" cd=").append(node.contentDescription ?: "-")
-        if (Build.VERSION.SDK_INT >= 26) {
-            treeSb.append(" hint=").append(node.hintText ?: "-")
-        }
-        treeSb.append(" clickable=").append(node.isClickable)
-            .append(" scrollable=").append(node.isScrollable)
-            .append(" editable=").append(node.isEditable)
-            .append(" bounds=").append(rectStr(node))
-            .append('\n')
+        @Suppress("DEPRECATION")
+        service.takeScreenshot(
+            Display.DEFAULT_DISPLAY,
+            executor,
+            object : AccessibilityService.TakeScreenshotCallback() {
 
-        // 2) DFS 텍스트만 추출 (필터링 없이 전부)
-        node.text?.toString()?.let { textSb.append(it).append('\n') }
-        node.contentDescription?.toString()?.let { textSb.append(it).append('\n') }
-        if (Build.VERSION.SDK_INT >= 26) {
-            node.hintText?.toString()?.let { textSb.append(it).append('\n') }
-        }
+                override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                    val bmp = Bitmap.wrapHardwareBuffer(
+                        result.hardwareBuffer,
+                        result.colorSpace
+                    )
+                    result.hardwareBuffer.close()
+                    cont.resume(bmp)
+                }
 
-        for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { child ->
-                dfs(child, depth + 1)
-                child.recycle()
+                override fun onFailure(errorCode: Int) {
+                    cont.resume(null)
+                }
             }
-        }
+        )
     }
-
-    dfs(rootNode, 0)
-
-    // return: (treeDump, allTexts)
-    return treeSb.toString() to textSb.toString()
-}
