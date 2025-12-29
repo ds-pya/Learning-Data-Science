@@ -1,23 +1,119 @@
-private fun showToggleNotification(enabled: Boolean) {
-    val mgr = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-    val chId = "contextlens_state"
+import androidx.room.*
 
-    if (mgr.getNotificationChannel(chId) == null) {
-        mgr.createNotificationChannel(
-            NotificationChannel(
-                chId,
-                "ContextLens State",
-                NotificationManager.IMPORTANCE_LOW
-            )
-        )
+@Dao
+interface AnalysisQueueDao {
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun enqueue(item: AnalysisQueueEntity): Long
+
+    @Query("SELECT * FROM analysis_queue WHERE status = 0 ORDER BY id ASC LIMIT 1")
+    suspend fun peekPending(): AnalysisQueueEntity?
+
+    @Query("UPDATE analysis_queue SET status = 1, updatedAtMs = :now WHERE id = :id AND status = 0")
+    suspend fun markRunningIfPending(id: Long, now: Long): Int
+
+    @Query("UPDATE analysis_queue SET status = 2, updatedAtMs = :now, lastError = NULL WHERE id = :id")
+    suspend fun markDone(id: Long, now: Long)
+
+    @Query("UPDATE analysis_queue SET status = 3, updatedAtMs = :now, attempts = :attempts, lastError = :err WHERE id = :id")
+    suspend fun markFailed(id: Long, now: Long, attempts: Int, err: String?)
+
+    @Query("UPDATE analysis_queue SET status = 0, updatedAtMs = :now, attempts = :attempts, lastError = :err WHERE id = :id")
+    suspend fun requeue(id: Long, now: Long, attempts: Int, err: String?)
+
+    @Transaction
+    suspend fun dequeueAndMarkRunning(): AnalysisQueueEntity? {
+        val item = peekPending() ?: return null
+        val now = System.currentTimeMillis()
+        val updated = markRunningIfPending(item.id, now)
+        return if (updated == 1) item.copy(status = 1, updatedAtMs = now) else null
+    }
+}
+
+import android.content.Context
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedInject
+import dagger.assisted.AssistedFactory
+import kotlinx.coroutines.*
+import java.io.File
+import java.nio.charset.StandardCharsets
+
+class DirectoryAnalysisManager @AssistedInject constructor(
+    @Assisted private val context: Context,
+    private val dao: AnalysisQueueDao,
+    private val usecase: AnalyzeCurrentActivityUseCase, // 당신 기존 것 그대로
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var job: Job? = null
+
+    fun start() {
+        if (job?.isActive == true) return
+        job = scope.launch { loop() }
     }
 
-    val n = Notification.Builder(this, chId)
-        .setSmallIcon(android.R.drawable.ic_menu_view)
-        .setContentTitle("ContextLens")
-        .setContentText(if (enabled) "ON" else "OFF")
-        .setOngoing(true)
-        .build()
+    fun stop() {
+        job?.cancel()
+        job = null
+    }
 
-    mgr.notify(1, n)
+    suspend fun enqueueDir(dirPath: String) {
+        dao.enqueue(AnalysisQueueEntity(dirPath = dirPath))
+    }
+
+    private suspend fun loop() {
+        while (isActive) {
+            val item = dao.dequeueAndMarkRunning()
+            if (item == null) {
+                delay(300) // 큐 비었으면 잠깐 쉼
+                continue
+            }
+
+            val now = System.currentTimeMillis()
+            try {
+                processDir(item.dirPath)   // ✅ 여기서 VLM/LLM
+                dao.markDone(item.id, System.currentTimeMillis())
+            } catch (t: Throwable) {
+                val attempts = item.attempts + 1
+                val err = t.message ?: t.javaClass.simpleName
+                if (attempts < 3) {
+                    dao.requeue(item.id, System.currentTimeMillis(), attempts, err)
+                    delay((attempts * attempts * 1000L).coerceAtMost(10_000L)) // 1s,4s,9s...
+                } else {
+                    dao.markFailed(item.id, System.currentTimeMillis(), attempts, err)
+                }
+            }
+        }
+    }
+
+    private suspend fun processDir(dirPath: String) {
+        val dir = File(dirPath)
+        val shot = File(dir, "screenshot.jpg")
+        val text = File(dir, "totaltext.txt")
+
+        // 둘 다 하고 싶다: (1) 이미지 분석, (2) 텍스트 분석
+        val imageResult = if (shot.exists()) {
+            val bmp = shot.inputStream().use { android.graphics.BitmapFactory.decodeStream(it) }
+            val r = usecase(bmp) // suspend
+            bmp?.recycle()
+            r
+        } else null
+
+        val textResult = if (text.exists()) {
+            val s = text.readText(StandardCharsets.UTF_8)
+            usecase(s) // suspend (string 버전)
+        } else null
+
+        // 결과 저장 (디렉토리 안)
+        val out = File(dir, "analysis.txt")
+        val content = buildString {
+            if (imageResult != null) appendLine("[image]").appendLine(imageResult)
+            if (textResult != null) appendLine("[text]").appendLine(textResult)
+        }
+        out.writeText(content, StandardCharsets.UTF_8)
+    }
+
+    @AssistedFactory
+    interface Factory {
+        fun create(context: Context): DirectoryAnalysisManager
+    }
 }
