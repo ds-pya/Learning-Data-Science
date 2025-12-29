@@ -1,119 +1,79 @@
-import androidx.room.*
+import androidx.room.Entity
+import androidx.room.Index
+import androidx.room.PrimaryKey
+
+@Entity(
+    tableName = "fourw_log",
+    indices = [
+        Index(value = ["eventTimeMs"]),
+        Index(value = ["packageName", "eventTimeMs"]),
+        Index(value = ["artifactDir"], unique = true) // 중복 삽입 방지
+    ]
+)
+data class FourWLogEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+
+    // 4W
+    val eventTimeMs: Long,                 // when (트리거 발생 시각)
+    val userId: String = "user",           // who (확장 대비)
+    val packageName: String? = null,       // what/where 컨텍스트용(강추)
+    val className: String? = null,         // 선택
+
+    // where (insert 시점 위치)
+    val lat: Double? = null,
+    val lon: Double? = null,
+    val accuracyM: Float? = null,
+    val locTimeMs: Long? = null,
+
+    // input artifact (폴더 하나로 통일)
+    val artifactDir: String,               // 예: .../Download/contextlens/20251229_101530_123/
+
+    // timing
+    val analyzedAtMs: Long? = null,        // 분석 완료 시각
+    val insertedAtMs: Long = System.currentTimeMillis(),
+
+    // results (JSON 문자열)
+    val llmJson: String? = null,           // {"action":..., "filtered":[...], "summary":..., "model":..., ...}
+    val vlmJson: String? = null            // 동일 포맷
+)
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
 
 @Dao
-interface AnalysisQueueDao {
+interface FourWLogDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun enqueue(item: AnalysisQueueEntity): Long
+    suspend fun insertIgnore(item: FourWLogEntity): Long
 
-    @Query("SELECT * FROM analysis_queue WHERE status = 0 ORDER BY id ASC LIMIT 1")
-    suspend fun peekPending(): AnalysisQueueEntity?
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: FourWLogEntity): Long
 
-    @Query("UPDATE analysis_queue SET status = 1, updatedAtMs = :now WHERE id = :id AND status = 0")
-    suspend fun markRunningIfPending(id: Long, now: Long): Int
+    @Query("SELECT * FROM fourw_log WHERE eventTimeMs BETWEEN :fromMs AND :toMs ORDER BY eventTimeMs DESC")
+    suspend fun listByTime(fromMs: Long, toMs: Long): List<FourWLogEntity>
 
-    @Query("UPDATE analysis_queue SET status = 2, updatedAtMs = :now, lastError = NULL WHERE id = :id")
-    suspend fun markDone(id: Long, now: Long)
+    @Query("SELECT * FROM fourw_log WHERE packageName = :pkg ORDER BY eventTimeMs DESC LIMIT :limit")
+    suspend fun listByPackage(pkg: String, limit: Int = 200): List<FourWLogEntity>
 
-    @Query("UPDATE analysis_queue SET status = 3, updatedAtMs = :now, attempts = :attempts, lastError = :err WHERE id = :id")
-    suspend fun markFailed(id: Long, now: Long, attempts: Int, err: String?)
+    @Query("SELECT * FROM fourw_log WHERE artifactDir = :dir LIMIT 1")
+    suspend fun findByArtifactDir(dir: String): FourWLogEntity?
 
-    @Query("UPDATE analysis_queue SET status = 0, updatedAtMs = :now, attempts = :attempts, lastError = :err WHERE id = :id")
-    suspend fun requeue(id: Long, now: Long, attempts: Int, err: String?)
-
-    @Transaction
-    suspend fun dequeueAndMarkRunning(): AnalysisQueueEntity? {
-        val item = peekPending() ?: return null
-        val now = System.currentTimeMillis()
-        val updated = markRunningIfPending(item.id, now)
-        return if (updated == 1) item.copy(status = 1, updatedAtMs = now) else null
-    }
+    @Query("DELETE FROM fourw_log WHERE eventTimeMs < :beforeMs")
+    suspend fun deleteOlderThan(beforeMs: Long): Int
 }
 
-import android.content.Context
-import dagger.assisted.Assisted
-import dagger.assisted.AssistedInject
-import dagger.assisted.AssistedFactory
-import kotlinx.coroutines.*
-import java.io.File
-import java.nio.charset.StandardCharsets
-
-class DirectoryAnalysisManager @AssistedInject constructor(
-    @Assisted private val context: Context,
-    private val dao: AnalysisQueueDao,
-    private val usecase: AnalyzeCurrentActivityUseCase, // 당신 기존 것 그대로
-) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var job: Job? = null
-
-    fun start() {
-        if (job?.isActive == true) return
-        job = scope.launch { loop() }
-    }
-
-    fun stop() {
-        job?.cancel()
-        job = null
-    }
-
-    suspend fun enqueueDir(dirPath: String) {
-        dao.enqueue(AnalysisQueueEntity(dirPath = dirPath))
-    }
-
-    private suspend fun loop() {
-        while (isActive) {
-            val item = dao.dequeueAndMarkRunning()
-            if (item == null) {
-                delay(300) // 큐 비었으면 잠깐 쉼
-                continue
-            }
-
-            val now = System.currentTimeMillis()
-            try {
-                processDir(item.dirPath)   // ✅ 여기서 VLM/LLM
-                dao.markDone(item.id, System.currentTimeMillis())
-            } catch (t: Throwable) {
-                val attempts = item.attempts + 1
-                val err = t.message ?: t.javaClass.simpleName
-                if (attempts < 3) {
-                    dao.requeue(item.id, System.currentTimeMillis(), attempts, err)
-                    delay((attempts * attempts * 1000L).coerceAtMost(10_000L)) // 1s,4s,9s...
-                } else {
-                    dao.markFailed(item.id, System.currentTimeMillis(), attempts, err)
-                }
-            }
-        }
-    }
-
-    private suspend fun processDir(dirPath: String) {
-        val dir = File(dirPath)
-        val shot = File(dir, "screenshot.jpg")
-        val text = File(dir, "totaltext.txt")
-
-        // 둘 다 하고 싶다: (1) 이미지 분석, (2) 텍스트 분석
-        val imageResult = if (shot.exists()) {
-            val bmp = shot.inputStream().use { android.graphics.BitmapFactory.decodeStream(it) }
-            val r = usecase(bmp) // suspend
-            bmp?.recycle()
-            r
-        } else null
-
-        val textResult = if (text.exists()) {
-            val s = text.readText(StandardCharsets.UTF_8)
-            usecase(s) // suspend (string 버전)
-        } else null
-
-        // 결과 저장 (디렉토리 안)
-        val out = File(dir, "analysis.txt")
-        val content = buildString {
-            if (imageResult != null) appendLine("[image]").appendLine(imageResult)
-            if (textResult != null) appendLine("[text]").appendLine(textResult)
-        }
-        out.writeText(content, StandardCharsets.UTF_8)
-    }
-
-    @AssistedFactory
-    interface Factory {
-        fun create(context: Context): DirectoryAnalysisManager
-    }
+@Database(
+    entities = [
+        ScreenAwareLogEntity::class,
+        AnalysisQueueEntity::class,
+        FourWLogEntity::class
+    ],
+    version = /* +1 증가 */
+)
+abstract class AppDatabase : RoomDatabase() {
+    abstract fun screenAwareLogDao(): ScreenAwareLogDao
+    abstract fun analysisQueueDao(): AnalysisQueueDao
+    abstract fun fourWLogDao(): FourWLogDao
 }
