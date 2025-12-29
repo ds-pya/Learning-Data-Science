@@ -1,33 +1,47 @@
-import android.content.Context
-import android.os.Environment
-import java.io.File
-import java.io.FileOutputStream
+import android.os.Build
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityButtonController
+import android.widget.Toast
+import androidx.annotation.RequiresApi
 
-// 이미 위에서 얻었다고 가정:
-// val bitmap = getScreenshot(...)
-// val treeText = getTreeText(...)
-// val allText = getAllText(...)
+class MyAccessibilityService : AccessibilityService() {
 
-private fun saveArtifacts(
-    context: Context,
-    tsFolder: String,          // "yyyyMMdd_HHmmss_SSS" 같은 폴더명
-    bitmap: android.graphics.Bitmap?,
-    treeText: String,
-    allText: String,
-    jpegQuality: Int = 80
-): Triple<String?, String?, String?> {
+    private var shortcutEnabled = false
+    private var buttonController: AccessibilityButtonController? = null
 
-    val baseDir = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "contextlens")
-    val dir = File(baseDir, tsFolder).apply { mkdirs() }
+    @RequiresApi(Build.VERSION_CODES.O)
+    override fun onServiceConnected() {
+        super.onServiceConnected()
 
-    val shotPath = bitmap?.let {
-        val f = File(dir, "screenshot.jpg")
-        FileOutputStream(f).use { os -> it.compress(android.graphics.Bitmap.CompressFormat.JPEG, jpegQuality, os) }
-        f.absolutePath
+        buttonController = accessibilityButtonController
+
+        if (buttonController?.isAccessibilityButtonAvailable == true) {
+            buttonController?.registerAccessibilityButtonCallback(
+                buttonCallback
+            )
+        }
     }
 
-    val treePath = File(dir, "layoutdump.txt").apply { writeText(treeText) }.absolutePath
-    val textPath = File(dir, "totaltext.txt").apply { writeText(allText) }.absolutePath
+    @RequiresApi(Build.VERSION_CODES.O)
+    override fun onDestroy() {
+        super.onDestroy()
+        buttonController?.unregisterAccessibilityButtonCallback(buttonCallback)
+    }
 
-    return Triple(shotPath, treePath, textPath)
+    @RequiresApi(Build.VERSION_CODES.O)
+    private val buttonCallback =
+        object : AccessibilityButtonController.AccessibilityButtonCallback() {
+
+            override fun onClicked(controller: AccessibilityButtonController) {
+                shortcutEnabled = !shortcutEnabled
+                Toast.makeText(
+                    applicationContext,
+                    if (shortcutEnabled) "ContextLens: ON" else "ContextLens: OFF",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+
+    override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent) {}
+    override fun onInterrupt() {}
 }
