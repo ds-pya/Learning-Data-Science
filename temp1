@@ -1,47 +1,23 @@
-import android.os.Build
-import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.AccessibilityButtonController
-import android.widget.Toast
-import androidx.annotation.RequiresApi
+private fun showToggleNotification(enabled: Boolean) {
+    val mgr = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+    val chId = "contextlens_state"
 
-class MyAccessibilityService : AccessibilityService() {
-
-    private var shortcutEnabled = false
-    private var buttonController: AccessibilityButtonController? = null
-
-    @RequiresApi(Build.VERSION_CODES.O)
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-
-        buttonController = accessibilityButtonController
-
-        if (buttonController?.isAccessibilityButtonAvailable == true) {
-            buttonController?.registerAccessibilityButtonCallback(
-                buttonCallback
+    if (mgr.getNotificationChannel(chId) == null) {
+        mgr.createNotificationChannel(
+            NotificationChannel(
+                chId,
+                "ContextLens State",
+                NotificationManager.IMPORTANCE_LOW
             )
-        }
+        )
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    override fun onDestroy() {
-        super.onDestroy()
-        buttonController?.unregisterAccessibilityButtonCallback(buttonCallback)
-    }
+    val n = Notification.Builder(this, chId)
+        .setSmallIcon(android.R.drawable.ic_menu_view)
+        .setContentTitle("ContextLens")
+        .setContentText(if (enabled) "ON" else "OFF")
+        .setOngoing(true)
+        .build()
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    private val buttonCallback =
-        object : AccessibilityButtonController.AccessibilityButtonCallback() {
-
-            override fun onClicked(controller: AccessibilityButtonController) {
-                shortcutEnabled = !shortcutEnabled
-                Toast.makeText(
-                    applicationContext,
-                    if (shortcutEnabled) "ContextLens: ON" else "ContextLens: OFF",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        }
-
-    override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent) {}
-    override fun onInterrupt() {}
+    mgr.notify(1, n)
 }
