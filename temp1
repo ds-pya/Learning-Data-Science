@@ -1,143 +1,51 @@
-class WindowContentState(
-    private val quietGapMs: Long = 500L,
-    private val noisyEnterWindowMs: Long = 30_000L
-) {
-    enum class Mode { QUIET, NOISY }
+import android.graphics.Rect
+import android.os.Build
+import android.view.accessibility.AccessibilityNodeInfo
 
-    data class Trigger(
-        val ts: Long,
-        val packageName: String,
-        val mode: Mode,
-        val reason: String // "quiet_gap" | "quiet_gap_after_noisy" | "noisy_enter"
-    )
+// AccessibilityService 안에서 호출한다고 가정
+private fun dumpRootTreeAndAllTexts(rootNode: AccessibilityNodeInfo): Pair<String, String> {
+    val treeSb = StringBuilder(16_384)
+    val textSb = StringBuilder(16_384)
 
-    private var mode: Mode = Mode.QUIET
-
-    private var lastSignalAt: Long = 0L
-    private var lastPackage: String? = null
-
-    // next alarm absolute time (epoch ms). 0 means no alarm pending.
-    private var nextAlarmAt: Long = 0L
-    private var scheduledPackage: String? = null
-
-    // Noisy tracking: "quiet gap 없이 흔들리기 시작한 시점"
-    private var noisyStartAt: Long? = null
-    private var noisyEntered: Boolean = false
-    private var noisyEnterTriggered: Boolean = false
-
-    // 앱 전환 경계에서 quiet 트리거를 막기 위한 플래그
-    private var packageChangedSinceLastQuiet: Boolean = false
-
-    /**
-     * signal = (TYPE_WINDOW_CONTENT_CHANGED) after filtering
-     * @return nextAlarmAt (absolute epoch ms) to schedule onAlarm().
-     */
-    fun onSignal(packageName: String, now: Long): Long {
-        // package switch handling
-        val prevPkg = lastPackage
-        if (prevPkg != null && prevPkg != packageName) {
-            packageChangedSinceLastQuiet = true
-            // 전환 시 noisy 리셋
-            resetNoisy()
-            mode = Mode.QUIET
-        }
-
-        lastPackage = packageName
-        lastSignalAt = now
-
-        // schedule alarm at quiet boundary
-        scheduledPackage = packageName
-        nextAlarmAt = now + quietGapMs
-        return nextAlarmAt
+    fun rectStr(node: AccessibilityNodeInfo): String {
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        return "${r.left},${r.top},${r.right},${r.bottom}"
     }
 
-    /**
-     * Call at (or after) nextAlarmAt.
-     * Returns Trigger if logging should happen, otherwise null.
-     */
-    fun onAlarm(now: Long): Trigger? {
-        val schedPkg = scheduledPackage ?: return null
-        val lastPkg = lastPackage ?: return null
+    fun dfs(node: AccessibilityNodeInfo, depth: Int) {
+        // 1) 트리 덤프 (hierarchical)
+        repeat(depth) { treeSb.append("  ") }
+        treeSb.append("cls=").append(node.className ?: "-")
+            .append(" id=").append(node.viewIdResourceName ?: "-")
+            .append(" text=").append(node.text ?: "-")
+            .append(" cd=").append(node.contentDescription ?: "-")
+        if (Build.VERSION.SDK_INT >= 26) {
+            treeSb.append(" hint=").append(node.hintText ?: "-")
+        }
+        treeSb.append(" clickable=").append(node.isClickable)
+            .append(" scrollable=").append(node.isScrollable)
+            .append(" editable=").append(node.isEditable)
+            .append(" bounds=").append(rectStr(node))
+            .append('\n')
 
-        // alarm fired too early (drift) -> ignore
-        if (nextAlarmAt != 0L && now < nextAlarmAt) return null
+        // 2) DFS 텍스트만 추출 (필터링 없이 전부)
+        node.text?.toString()?.let { textSb.append(it).append('\n') }
+        node.contentDescription?.toString()?.let { textSb.append(it).append('\n') }
+        if (Build.VERSION.SDK_INT >= 26) {
+            node.hintText?.toString()?.let { textSb.append(it).append('\n') }
+        }
 
-        val quietOk = (now - lastSignalAt) >= quietGapMs
-
-        if (quietOk) {
-            // quiet occurred: noisy ends if it was noisy
-            val wasNoisy = (mode == Mode.NOISY)
-
-            // clear alarm; next signal will set it again
-            nextAlarmAt = 0L
-
-            // if package switched during this session, skip analysis even if quiet
-            val samePkg = (schedPkg == lastPkg)
-            if (!samePkg || packageChangedSinceLastQuiet) {
-                packageChangedSinceLastQuiet = false
-                if (wasNoisy) {
-                    mode = Mode.QUIET
-                    resetNoisy()
-                }
-                return null
-            }
-
-            packageChangedSinceLastQuiet = false
-
-            return if (wasNoisy) {
-                mode = Mode.QUIET
-                resetNoisy()
-                Trigger(ts = now, packageName = lastPkg, mode = Mode.QUIET, reason = "quiet_gap_after_noisy")
-            } else {
-                Trigger(ts = now, packageName = lastPkg, mode = Mode.QUIET, reason = "quiet_gap")
+        for (i in 0 until node.childCount) {
+            node.getChild(i)?.let { child ->
+                dfs(child, depth + 1)
+                child.recycle()
             }
         }
-
-        // not quiet: still noisy-ish; check NOISY enter condition
-        // set noisyStartAt when we first observe "not quiet" at alarm time
-        val ns = noisyStartAt
-        if (ns == null) {
-            noisyStartAt = now
-            noisyEntered = false
-            noisyEnterTriggered = false
-            return null
-        }
-
-        if (!noisyEntered && (now - ns) >= noisyEnterWindowMs) {
-            mode = Mode.NOISY
-            noisyEntered = true
-
-            // noisy enter: trigger once
-            if (!noisyEnterTriggered) {
-                noisyEnterTriggered = true
-
-                // 전환 경계면 스킵
-                if (!packageChangedSinceLastQuiet && schedPkg == lastPkg) {
-                    return Trigger(ts = now, packageName = lastPkg, mode = Mode.NOISY, reason = "noisy_enter")
-                }
-            }
-        }
-
-        // NOISY 동안 추가 트리거 금지 (quiet 생길 때까지)
-        return null
     }
 
-    fun getMode(): Mode = mode
-    fun getNextAlarmAt(): Long = nextAlarmAt
+    dfs(rootNode, 0)
 
-    fun resetAll() {
-        mode = Mode.QUIET
-        lastSignalAt = 0L
-        lastPackage = null
-        nextAlarmAt = 0L
-        scheduledPackage = null
-        packageChangedSinceLastQuiet = false
-        resetNoisy()
-    }
-
-    private fun resetNoisy() {
-        noisyStartAt = null
-        noisyEntered = false
-        noisyEnterTriggered = false
-    }
+    // return: (treeDump, allTexts)
+    return treeSb.toString() to textSb.toString()
 }
