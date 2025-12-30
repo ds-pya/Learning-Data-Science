@@ -1,71 +1,77 @@
 import java.io.File
-import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
 
 suspend fun exportStmRdb(
-    dst: File,
+    dstDir: File,
     stmDao: ShortTermMemoryDao,
     linkDao: Stm4wLinkDao,
     nowMs: Long = System.currentTimeMillis()
 ) {
     val minUpdatedAtMs = nowMs - 24L * 60 * 60 * 1000
 
+    // 1) rows
     val stms = stmDao.listRecentAllForExport(minUpdatedAtMs)
     val stmIds = stms.map { it.id }
 
-    // link: stmId -> List<fourwId>
     val linkMap: Map<Long, List<Long>> =
         if (stmIds.isEmpty()) emptyMap()
         else linkDao.listLinksForStmIds(stmIds)
             .groupBy({ it.stmId }, { it.fourwId })
 
-    fun csvEscape(s: String): String {
-        val needsQuote = s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r')
-        val escaped = s.replace("\"", "\"\"")
-        return if (needsQuote) "\"$escaped\"" else escaped
+    // 2) outfile
+    val outFile = File(dstDir, "stm.csv")
+    outFile.parentFile?.mkdirs()
+
+    outFile.outputStream().use { os ->
+        // BOM (Excel friendly)
+        os.write(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()))
+
+        fun w(s: String) = os.write(s.toByteArray(StandardCharsets.UTF_8))
+
+        fun escapeCsv(s: String): String {
+            val needsQuote = s.any { it == ',' || it == '"' || it == '\n' || it == '\r' }
+            val escaped = s.replace("\"", "\"\"")
+            return if (needsQuote) "\"$escaped\"" else escaped
+        }
+
+        // header
+        w(
+            listOf(
+                "id",
+                "createdAtMs",
+                "updatedAtMs",
+                "startAtMs",
+                "endAtMs",
+                "start4wId",
+                "end4wId",
+                "head4wId",
+                "headSummary",
+                "summary",
+                "all4wIds"
+            ).joinToString(",") + "\n"
+        )
+
+        // rows
+        stms.forEach { stm ->
+            val all4wIds = (linkMap[stm.id] ?: emptyList())
+                .distinct()
+                .joinToString(";") // local join friendly
+
+            w(
+                listOf(
+                    stm.id.toString(),
+                    stm.createdAtMs.toString(),
+                    stm.updatedAtMs.toString(),
+                    stm.startAtMs.toString(),
+                    stm.endAtMs.toString(),
+                    stm.start4wId.toString(),
+                    stm.end4wId.toString(),
+                    stm.head4wId.toString(),
+                    escapeCsv(stm.headSummary),
+                    escapeCsv(stm.summary),
+                    escapeCsv(all4wIds)
+                ).joinToString(",") + "\n"
+            )
+        }
     }
-
-    // 헤더(원하는 컬럼만)
-    val header = listOf(
-        "id",
-        "createdAtMs",
-        "updatedAtMs",
-        "startAtMs",
-        "endAtMs",
-        "start4wId",
-        "end4wId",
-        "head4wId",
-        "headSummary",
-        "summary",
-        "all4wIds"
-    ).joinToString(",")
-
-    // 본문
-    val sb = StringBuilder()
-    sb.appendLine(header)
-
-    for (stm in stms) {
-        val all4wIds = (linkMap[stm.id] ?: emptyList())
-            .distinct()                 // 혹시 중복 link 방어
-            .joinToString(";")          // 로컬 조인/파싱용 구분자
-
-        val row = listOf(
-            stm.id.toString(),
-            stm.createdAtMs.toString(),
-            stm.updatedAtMs.toString(),
-            stm.startAtMs.toString(),
-            stm.endAtMs.toString(),
-            stm.start4wId.toString(),
-            stm.end4wId.toString(),
-            stm.head4wId.toString(),
-            csvEscape(stm.headSummary),
-            csvEscape(stm.summary),
-            csvEscape(all4wIds)
-        ).joinToString(",")
-
-        sb.appendLine(row)
-    }
-
-    // 필요하면 BOM 넣기: "\uFEFF" + ...
-    dst.parentFile?.mkdirs()
-    dst.writeText(sb.toString(), Charsets.UTF_8)
 }
