@@ -1,79 +1,80 @@
-private fun buildRoutingInputText(
-    candidates: List<ShortTermMemoryEntity>,
-    new4wSummary: String,
-    maxCandidates: Int = 50,
+private const val STM_SUMMARIZE_PROMPT: String = """
+역할:
+너는 단기기억(STM, Short-Term Memory)을 최신 상태로 "덮어써서" 갱신하는 요약 모델이다.
+
+정의:
+- CURRENT_STM_STATE: 현재 STM이 가지고 있는 headSummary(대표 요약)와 stmSummary(전체 요약)이다.
+- TARGET_STM_FOURW_SUMMARIES: 이 STM에 종속된 4W(원자 이벤트)들의 요약 목록이다. (최신순)
+
+해야 할 일:
+1) 아래 4W 목록을 바탕으로, 이 STM의 현재 의미가 유지되어야 하는지 또는 새로운 흐름으로 전환되어야 하는지 판단한다.
+2) 대표(핵심) 4W를 목록 중 하나로 선택한다. (head_fourw_id)
+3) 선택한 대표 4W를 한 줄로 요약한다. (head_fourw_summary)
+4) STM 전체를 한 줄로 요약한다. (stm_summary)
+
+규칙:
+- 출력은 반드시 JSON 객체 1개만 반환한다. 다른 텍스트/코드펜스/설명 금지.
+- head_fourw_id는 반드시 입력 목록에 존재하는 fourw_id 중 하나여야 한다.
+- head_fourw_summary, stm_summary는 한국어 한 줄.
+- 가능하면 CURRENT_STM_STATE를 참고하되, 필요하면 과감히 덮어써라.
+
+출력 JSON 스키마:
+{
+  "head_fourw_id": number,
+  "head_fourw_summary": string,
+  "stm_summary": string
+}
+"""
+
+private fun buildStmSummarizeInputText(
+    currentHeadSummary: String,
+    currentStmSummary: String,
+    fourwSummaries: List<Pair<Long, String>>,
+    maxItems: Int = 50,
     maxSummaryChars: Int = 220
 ): String {
     fun clip(s: String, n: Int) = s.trim().let { if (it.length <= n) it else it.take(n) + "…" }
 
     val sb = StringBuilder()
-    sb.appendLine("NEW_4W_SUMMARY:")
-    sb.appendLine(clip(new4wSummary, maxSummaryChars))
-    sb.appendLine()
-    sb.appendLine("CANDIDATE_STMS (most-recent first):")
 
-    val list = candidates.take(maxCandidates)
+    sb.appendLine("CURRENT_STM_STATE:")
+    sb.appendLine("headSummary: ${clip(currentHeadSummary, maxSummaryChars)}")
+    sb.appendLine("stmSummary: ${clip(currentStmSummary, maxSummaryChars)}")
+    sb.appendLine()
+
+    sb.appendLine("TARGET_STM_FOURW_SUMMARIES (most-recent first):")
+
+    val list = fourwSummaries.take(maxItems)
     if (list.isEmpty()) {
         sb.appendLine("(none)")
-        return sb.toString()
+        return sb.toString().trimEnd()
     }
 
-    list.forEach { stm ->
-        sb.appendLine("[stm_id=${stm.id}] endAtMs=${stm.endAtMs}")
-        sb.appendLine("headSummary: ${clip(stm.headSummary, maxSummaryChars)}")
-        sb.appendLine("stmSummary:  ${clip(stm.summary, maxSummaryChars)}")
-        sb.appendLine() // 후보 간 빈 줄
+    list.forEach { (fourwId, summary) ->
+        sb.appendLine("[fourw_id=$fourwId]")
+        sb.appendLine("summary: ${clip(summary, maxSummaryChars)}")
+        sb.appendLine()
     }
 
     return sb.toString().trimEnd()
 }
 
-private const val ROUTING_PROMPT: String = """
-역할:
-너는 스마트폰 사용자 행동 로그를 "단기기억(STM, Short-Term Memory)" 단위로 묶는 라우팅 모델이다.
-
-정의:
-- 4W(원자 이벤트): 특정 시점에 관측된 사용자 행동 1개를 요약한 문자열이다. (예: "출근 경로를 검색했다")
-- NEW_4W_SUMMARY: 이번에 새로 들어온 4W(원자 이벤트) 요약 1개다.
-- STM: 여러 4W가 시간적으로 이어지며 하나의 흐름(행동 연속성/의도)을 이룬 덩어리다.
-- CANDIDATE_STMS: 최근 24시간 내의 STM 후보 목록이며, 각 후보는 다음을 가진다:
-  - stm_id: STM의 고유 id
-  - endAtMs: 그 STM에 마지막으로 포함된 4W의 시각(ms)
-  - headSummary: 그 STM을 대표하는 4W 요약(핵심)
-  - stmSummary: 그 STM 전체를 한 줄로 요약한 문장
-
-해야 할 일:
-- NEW_4W_SUMMARY가 CANDIDATE_STMS 중 하나의 흐름에 자연스럽게 이어지면 그 stm_id를 선택한다.
-- 어떤 STM에도 자연스럽게 이어지지 않으면 null을 선택한다.
-
-판단 기준(요약):
-- 같은 과업/목표/맥락의 연속이면 같은 STM으로 본다. (예: "날씨 확인" 다음 "출근 경로 확인"은 출근 준비 흐름으로 이어질 수 있음)
-- 명확히 다른 주제 전환이면 새 STM(null)로 본다.
-- 너무 억지로 끼워 맞추지 말고, 애매하면 null을 선택한다.
-
-출력 규칙(매우 중요):
-- 출력은 반드시 JSON 객체 1개만 반환한다. 다른 텍스트, 코드펜스, 설명 금지.
-- 스키마는 아래와 동일해야 한다.
-
-출력 JSON 스키마:
-{"stm_id": number|null}
-"""
-
 import org.json.JSONObject
 
-private fun refineRoutingOutputToStmId(raw: String): Long? {
+private fun refineStmSummarizeOutput(raw: String): Triple<Long, String, String> {
     val s = raw.trim()
     val start = s.indexOf('{')
     val end = s.lastIndexOf('}')
     require(start >= 0 && end > start) { "No JSON object in model output: $s" }
 
     val json = JSONObject(s.substring(start, end + 1))
-    if (!json.has("stm_id") || json.isNull("stm_id")) return null
 
-    return try {
-        json.getLong("stm_id")
-    } catch (_: Throwable) {
-        // 혹시 "123" 같은 문자열로 오는 케이스 방어
-        json.optString("stm_id", "").toLongOrNull()
-    }
+    val headId = json.getLong("head_fourw_id")
+    val headSummary = json.getString("head_fourw_summary").trim()
+    val stmSummary = json.getString("stm_summary").trim()
+
+    require(headSummary.isNotEmpty()) { "head_fourw_summary is empty" }
+    require(stmSummary.isNotEmpty()) { "stm_summary is empty" }
+
+    return Triple(headId, headSummary, stmSummary)
 }
