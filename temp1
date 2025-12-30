@@ -1,57 +1,70 @@
-import android.content.Context
-import java.io.File
-import java.nio.charset.StandardCharsets
+import kotlin.math.abs
 
-suspend fun exportFourWToCsv(
-    context: Context,
-    dao: FourWLogDao,
-    fromMs: Long,
-    toMs: Long
-): File {
-    val rows = dao.listByTime(fromMs, toMs)
+private var latestTextHash: Long? = null
 
-    val outDir = File(
-        context.getExternalFilesDir(null),
-        "contextlens_export"
-    ).apply { mkdirs() }
+fun checkTextSimilarAndUpdate(lines: List<String>, threshold: Int = 4): Boolean {
+    fun hamming(a: Long, b: Long) = java.lang.Long.bitCount(a xor b)
 
-    val outFile = File(outDir, "fourw_${fromMs}_${toMs}.csv")
+    // SimHash(64): 라인별 토큰을 해시 → 비트 가중치 합산
+    fun simHash64(lines: List<String>): Long {
+        val w = IntArray(64)
 
-    outFile.outputStream().use { os ->
-        // UTF-8 BOM (윈도우 대응)
-        os.write(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()))
+        lines.asSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct() // 중복 줄 제거(안정성↑, 비용↓)
+            .forEach { line ->
+                // 간단한 64-bit FNV-1a 해시
+                var x = -0x340d631b7bdddcdbL
+                for (ch in line) {
+                    x = x xor ch.code.toLong()
+                    x *= 0x100000001b3L
+                }
+                for (i in 0 until 64) {
+                    if (((x ushr i) and 1L) == 1L) w[i]++ else w[i]--
+                }
+            }
 
-        fun w(s: String) =
-            os.write(s.toByteArray(StandardCharsets.UTF_8))
-
-        // header
-        w(
-            "id,eventTimeMs,userId,packageName,artifactDir," +
-            "lat,lon,accuracyM,analyzedAtMs,insertedAtMs\n"
-        )
-
-        rows.forEach { r ->
-            w(
-                listOf(
-                    r.id,
-                    r.eventTimeMs,
-                    r.userId,
-                    r.packageName ?: "",
-                    r.artifactDir,
-                    r.lat ?: "",
-                    r.lon ?: "",
-                    r.accuracyM ?: "",
-                    r.analyzedAtMs ?: "",
-                    r.insertedAtMs
-                ).joinToString(",") { escapeCsv(it.toString()) } + "\n"
-            )
-        }
+        var out = 0L
+        for (i in 0 until 64) if (w[i] > 0) out = out or (1L shl i)
+        return out
     }
 
-    return outFile
+    val now = simHash64(lines)
+    val prev = latestTextHash
+    latestTextHash = now
+    return prev != null && hamming(prev, now) <= threshold
 }
 
-private fun escapeCsv(s: String): String =
-    if (s.contains(",") || s.contains("\"") || s.contains("\n"))
-        "\"${s.replace("\"", "\"\"")}\""
-    else s
+import android.graphics.Bitmap
+import android.graphics.Color
+
+private var latestImageHash: Long? = null
+
+fun checkImageSimilarAndUpdate(bitmap: Bitmap, threshold: Int = 6): Boolean {
+    fun hamming(a: Long, b: Long) = java.lang.Long.bitCount(a xor b)
+
+    // dHash(64): 9x8로 축소 후 인접 픽셀 밝기 비교
+    fun dHash64(bm: Bitmap): Long {
+        val small = Bitmap.createScaledBitmap(bm, 9, 8, true)
+        var out = 0L
+        var bit = 0
+        for (y in 0 until 8) {
+            for (x in 0 until 8) {
+                val p1 = small.getPixel(x, y)
+                val p2 = small.getPixel(x + 1, y)
+                val g1 = (Color.red(p1) * 3 + Color.green(p1) * 4 + Color.blue(p1)) // 대충 밝기
+                val g2 = (Color.red(p2) * 3 + Color.green(p2) * 4 + Color.blue(p2))
+                if (g1 < g2) out = out or (1L shl bit)
+                bit++
+            }
+        }
+        if (small !== bm) small.recycle()
+        return out
+    }
+
+    val now = dHash64(bitmap)
+    val prev = latestImageHash
+    latestImageHash = now
+    return prev != null && hamming(prev, now) <= threshold
+}
