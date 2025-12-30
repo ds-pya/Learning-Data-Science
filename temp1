@@ -1,70 +1,163 @@
-import kotlin.math.abs
+// ShortTermMemoryEntity.kt
+package com.your.app.data.db.stm
 
-private var latestTextHash: Long? = null
+import androidx.room.Entity
+import androidx.room.Index
+import androidx.room.PrimaryKey
 
-fun checkTextSimilarAndUpdate(lines: List<String>, threshold: Int = 4): Boolean {
-    fun hamming(a: Long, b: Long) = java.lang.Long.bitCount(a xor b)
+@Entity(
+    tableName = "short_term_memory",
+    indices = [
+        Index("updatedAtMs"),
+        Index("endAtMs"),
+        Index("head4wId")
+    ]
+)
+data class ShortTermMemoryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
 
-    // SimHash(64): 라인별 토큰을 해시 → 비트 가중치 합산
-    fun simHash64(lines: List<String>): Long {
-        val w = IntArray(64)
+    val createdAtMs: Long,
+    val updatedAtMs: Long,
 
-        lines.asSequence()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct() // 중복 줄 제거(안정성↑, 비용↓)
-            .forEach { line ->
-                // 간단한 64-bit FNV-1a 해시
-                var x = -0x340d631b7bdddcdbL
-                for (ch in line) {
-                    x = x xor ch.code.toLong()
-                    x *= 0x100000001b3L
-                }
-                for (i in 0 until 64) {
-                    if (((x ushr i) and 1L) == 1L) w[i]++ else w[i]--
-                }
-            }
+    val startAtMs: Long,
+    val endAtMs: Long,
 
-        var out = 0L
-        for (i in 0 until 64) if (w[i] > 0) out = out or (1L shl i)
-        return out
-    }
+    val start4wId: Long,
+    val end4wId: Long,
+    val head4wId: Long,
 
-    val now = simHash64(lines)
-    val prev = latestTextHash
-    latestTextHash = now
-    return prev != null && hamming(prev, now) <= threshold
+    val headSummary: String,
+    val summary: String
+)
+
+// Stm4wLinkEntity.kt
+package com.your.app.data.db.stm
+
+import androidx.room.Entity
+import androidx.room.Index
+import androidx.room.PrimaryKey
+
+@Entity(
+    tableName = "stm_4w_link",
+    indices = [
+        Index("stmId"),
+        Index(value = ["stmId", "eventTimeMs"])
+    ]
+)
+data class Stm4wLinkEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+
+    val stmId: Long,
+    val fourwId: Long,
+
+    // 4w의 eventTimeMs를 그대로 복사해 두는 용도 (최신 N개 뽑기 쉬움)
+    val eventTimeMs: Long,
+
+    // link가 추가된 시각(옵션이지만 디버깅에 유용)
+    val addedAtMs: Long
+)
+
+// ShortTermMemoryDao.kt
+package com.your.app.data.db.stm
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Transaction
+
+@Dao
+interface ShortTermMemoryDao {
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(entity: ShortTermMemoryEntity): Long
+
+    @Query(
+        """
+        SELECT * FROM short_term_memory
+        WHERE updatedAtMs >= :minUpdatedAtMs
+        ORDER BY updatedAtMs DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun listRecent(minUpdatedAtMs: Long, limit: Int): List<ShortTermMemoryEntity>
+
+    @Query("SELECT * FROM short_term_memory WHERE id = :stmId LIMIT 1")
+    suspend fun getById(stmId: Long): ShortTermMemoryEntity?
+
+    @Query(
+        """
+        UPDATE short_term_memory
+        SET updatedAtMs = :updatedAtMs,
+            endAtMs = :endAtMs,
+            end4wId = :end4wId,
+            head4wId = :head4wId,
+            headSummary = :headSummary,
+            summary = :summary
+        WHERE id = :stmId
+        """
+    )
+    suspend fun updateAfterAssign(
+        stmId: Long,
+        updatedAtMs: Long,
+        endAtMs: Long,
+        end4wId: Long,
+        head4wId: Long,
+        headSummary: String,
+        summary: String
+    )
+
+    @Query(
+        """
+        DELETE FROM short_term_memory
+        WHERE updatedAtMs < :olderThanMs
+        """
+    )
+    suspend fun deleteOlderThan(olderThanMs: Long): Int
 }
 
-import android.graphics.Bitmap
-import android.graphics.Color
+// Stm4wLinkDao.kt
+package com.your.app.data.db.stm
 
-private var latestImageHash: Long? = null
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
 
-fun checkImageSimilarAndUpdate(bitmap: Bitmap, threshold: Int = 6): Boolean {
-    fun hamming(a: Long, b: Long) = java.lang.Long.bitCount(a xor b)
+@Dao
+interface Stm4wLinkDao {
 
-    // dHash(64): 9x8로 축소 후 인접 픽셀 밝기 비교
-    fun dHash64(bm: Bitmap): Long {
-        val small = Bitmap.createScaledBitmap(bm, 9, 8, true)
-        var out = 0L
-        var bit = 0
-        for (y in 0 until 8) {
-            for (x in 0 until 8) {
-                val p1 = small.getPixel(x, y)
-                val p2 = small.getPixel(x + 1, y)
-                val g1 = (Color.red(p1) * 3 + Color.green(p1) * 4 + Color.blue(p1)) // 대충 밝기
-                val g2 = (Color.red(p2) * 3 + Color.green(p2) * 4 + Color.blue(p2))
-                if (g1 < g2) out = out or (1L shl bit)
-                bit++
-            }
-        }
-        if (small !== bm) small.recycle()
-        return out
-    }
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(link: Stm4wLinkEntity): Long
 
-    val now = dHash64(bitmap)
-    val prev = latestImageHash
-    latestImageHash = now
-    return prev != null && hamming(prev, now) <= threshold
+    @Query(
+        """
+        SELECT * FROM stm_4w_link
+        WHERE stmId = :stmId
+        ORDER BY eventTimeMs DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun listLatestByStm(stmId: Long, limit: Int): List<Stm4wLinkEntity>
+
+    @Query(
+        """
+        SELECT fourwId FROM stm_4w_link
+        WHERE stmId = :stmId
+        ORDER BY eventTimeMs DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun listLatestFourwIdsByStm(stmId: Long, limit: Int): List<Long>
+
+    @Query("DELETE FROM stm_4w_link WHERE stmId = :stmId")
+    suspend fun deleteByStmId(stmId: Long): Int
+
+    @Query(
+        """
+        DELETE FROM stm_4w_link
+        WHERE stmId = :stmId AND eventTimeMs < :minEventTimeMs
+        """
+    )
+    suspend fun deleteOlderLinksForStm(stmId: Long, minEventTimeMs: Long): Int
 }
