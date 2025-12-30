@@ -1,80 +1,71 @@
-private const val STM_SUMMARIZE_PROMPT: String = """
-역할:
-너는 단기기억(STM, Short-Term Memory)을 최신 상태로 "덮어써서" 갱신하는 요약 모델이다.
+import java.io.File
+import java.nio.charset.Charset
 
-정의:
-- CURRENT_STM_STATE: 현재 STM이 가지고 있는 headSummary(대표 요약)와 stmSummary(전체 요약)이다.
-- TARGET_STM_FOURW_SUMMARIES: 이 STM에 종속된 4W(원자 이벤트)들의 요약 목록이다. (최신순)
+suspend fun exportStmRdb(
+    dst: File,
+    stmDao: ShortTermMemoryDao,
+    linkDao: Stm4wLinkDao,
+    nowMs: Long = System.currentTimeMillis()
+) {
+    val minUpdatedAtMs = nowMs - 24L * 60 * 60 * 1000
 
-해야 할 일:
-1) 아래 4W 목록을 바탕으로, 이 STM의 현재 의미가 유지되어야 하는지 또는 새로운 흐름으로 전환되어야 하는지 판단한다.
-2) 대표(핵심) 4W를 목록 중 하나로 선택한다. (head_fourw_id)
-3) 선택한 대표 4W를 한 줄로 요약한다. (head_fourw_summary)
-4) STM 전체를 한 줄로 요약한다. (stm_summary)
+    val stms = stmDao.listRecentAllForExport(minUpdatedAtMs)
+    val stmIds = stms.map { it.id }
 
-규칙:
-- 출력은 반드시 JSON 객체 1개만 반환한다. 다른 텍스트/코드펜스/설명 금지.
-- head_fourw_id는 반드시 입력 목록에 존재하는 fourw_id 중 하나여야 한다.
-- head_fourw_summary, stm_summary는 한국어 한 줄.
-- 가능하면 CURRENT_STM_STATE를 참고하되, 필요하면 과감히 덮어써라.
+    // link: stmId -> List<fourwId>
+    val linkMap: Map<Long, List<Long>> =
+        if (stmIds.isEmpty()) emptyMap()
+        else linkDao.listLinksForStmIds(stmIds)
+            .groupBy({ it.stmId }, { it.fourwId })
 
-출력 JSON 스키마:
-{
-  "head_fourw_id": number,
-  "head_fourw_summary": string,
-  "stm_summary": string
-}
-"""
+    fun csvEscape(s: String): String {
+        val needsQuote = s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r')
+        val escaped = s.replace("\"", "\"\"")
+        return if (needsQuote) "\"$escaped\"" else escaped
+    }
 
-private fun buildStmSummarizeInputText(
-    currentHeadSummary: String,
-    currentStmSummary: String,
-    fourwSummaries: List<Pair<Long, String>>,
-    maxItems: Int = 50,
-    maxSummaryChars: Int = 220
-): String {
-    fun clip(s: String, n: Int) = s.trim().let { if (it.length <= n) it else it.take(n) + "…" }
+    // 헤더(원하는 컬럼만)
+    val header = listOf(
+        "id",
+        "createdAtMs",
+        "updatedAtMs",
+        "startAtMs",
+        "endAtMs",
+        "start4wId",
+        "end4wId",
+        "head4wId",
+        "headSummary",
+        "summary",
+        "all4wIds"
+    ).joinToString(",")
 
+    // 본문
     val sb = StringBuilder()
+    sb.appendLine(header)
 
-    sb.appendLine("CURRENT_STM_STATE:")
-    sb.appendLine("headSummary: ${clip(currentHeadSummary, maxSummaryChars)}")
-    sb.appendLine("stmSummary: ${clip(currentStmSummary, maxSummaryChars)}")
-    sb.appendLine()
+    for (stm in stms) {
+        val all4wIds = (linkMap[stm.id] ?: emptyList())
+            .distinct()                 // 혹시 중복 link 방어
+            .joinToString(";")          // 로컬 조인/파싱용 구분자
 
-    sb.appendLine("TARGET_STM_FOURW_SUMMARIES (most-recent first):")
+        val row = listOf(
+            stm.id.toString(),
+            stm.createdAtMs.toString(),
+            stm.updatedAtMs.toString(),
+            stm.startAtMs.toString(),
+            stm.endAtMs.toString(),
+            stm.start4wId.toString(),
+            stm.end4wId.toString(),
+            stm.head4wId.toString(),
+            csvEscape(stm.headSummary),
+            csvEscape(stm.summary),
+            csvEscape(all4wIds)
+        ).joinToString(",")
 
-    val list = fourwSummaries.take(maxItems)
-    if (list.isEmpty()) {
-        sb.appendLine("(none)")
-        return sb.toString().trimEnd()
+        sb.appendLine(row)
     }
 
-    list.forEach { (fourwId, summary) ->
-        sb.appendLine("[fourw_id=$fourwId]")
-        sb.appendLine("summary: ${clip(summary, maxSummaryChars)}")
-        sb.appendLine()
-    }
-
-    return sb.toString().trimEnd()
-}
-
-import org.json.JSONObject
-
-private fun refineStmSummarizeOutput(raw: String): Triple<Long, String, String> {
-    val s = raw.trim()
-    val start = s.indexOf('{')
-    val end = s.lastIndexOf('}')
-    require(start >= 0 && end > start) { "No JSON object in model output: $s" }
-
-    val json = JSONObject(s.substring(start, end + 1))
-
-    val headId = json.getLong("head_fourw_id")
-    val headSummary = json.getString("head_fourw_summary").trim()
-    val stmSummary = json.getString("stm_summary").trim()
-
-    require(headSummary.isNotEmpty()) { "head_fourw_summary is empty" }
-    require(stmSummary.isNotEmpty()) { "stm_summary is empty" }
-
-    return Triple(headId, headSummary, stmSummary)
+    // 필요하면 BOM 넣기: "\uFEFF" + ...
+    dst.parentFile?.mkdirs()
+    dst.writeText(sb.toString(), Charsets.UTF_8)
 }
