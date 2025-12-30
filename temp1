@@ -1,163 +1,79 @@
-// ShortTermMemoryEntity.kt
-package com.your.app.data.db.stm
+private fun buildRoutingInputText(
+    candidates: List<ShortTermMemoryEntity>,
+    new4wSummary: String,
+    maxCandidates: Int = 50,
+    maxSummaryChars: Int = 220
+): String {
+    fun clip(s: String, n: Int) = s.trim().let { if (it.length <= n) it else it.take(n) + "…" }
 
-import androidx.room.Entity
-import androidx.room.Index
-import androidx.room.PrimaryKey
+    val sb = StringBuilder()
+    sb.appendLine("NEW_4W_SUMMARY:")
+    sb.appendLine(clip(new4wSummary, maxSummaryChars))
+    sb.appendLine()
+    sb.appendLine("CANDIDATE_STMS (most-recent first):")
 
-@Entity(
-    tableName = "short_term_memory",
-    indices = [
-        Index("updatedAtMs"),
-        Index("endAtMs"),
-        Index("head4wId")
-    ]
-)
-data class ShortTermMemoryEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val list = candidates.take(maxCandidates)
+    if (list.isEmpty()) {
+        sb.appendLine("(none)")
+        return sb.toString()
+    }
 
-    val createdAtMs: Long,
-    val updatedAtMs: Long,
+    list.forEach { stm ->
+        sb.appendLine("[stm_id=${stm.id}] endAtMs=${stm.endAtMs}")
+        sb.appendLine("headSummary: ${clip(stm.headSummary, maxSummaryChars)}")
+        sb.appendLine("stmSummary:  ${clip(stm.summary, maxSummaryChars)}")
+        sb.appendLine() // 후보 간 빈 줄
+    }
 
-    val startAtMs: Long,
-    val endAtMs: Long,
-
-    val start4wId: Long,
-    val end4wId: Long,
-    val head4wId: Long,
-
-    val headSummary: String,
-    val summary: String
-)
-
-// Stm4wLinkEntity.kt
-package com.your.app.data.db.stm
-
-import androidx.room.Entity
-import androidx.room.Index
-import androidx.room.PrimaryKey
-
-@Entity(
-    tableName = "stm_4w_link",
-    indices = [
-        Index("stmId"),
-        Index(value = ["stmId", "eventTimeMs"])
-    ]
-)
-data class Stm4wLinkEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
-
-    val stmId: Long,
-    val fourwId: Long,
-
-    // 4w의 eventTimeMs를 그대로 복사해 두는 용도 (최신 N개 뽑기 쉬움)
-    val eventTimeMs: Long,
-
-    // link가 추가된 시각(옵션이지만 디버깅에 유용)
-    val addedAtMs: Long
-)
-
-// ShortTermMemoryDao.kt
-package com.your.app.data.db.stm
-
-import androidx.room.Dao
-import androidx.room.Insert
-import androidx.room.OnConflictStrategy
-import androidx.room.Query
-import androidx.room.Transaction
-
-@Dao
-interface ShortTermMemoryDao {
-
-    @Insert(onConflict = OnConflictStrategy.ABORT)
-    suspend fun insert(entity: ShortTermMemoryEntity): Long
-
-    @Query(
-        """
-        SELECT * FROM short_term_memory
-        WHERE updatedAtMs >= :minUpdatedAtMs
-        ORDER BY updatedAtMs DESC
-        LIMIT :limit
-        """
-    )
-    suspend fun listRecent(minUpdatedAtMs: Long, limit: Int): List<ShortTermMemoryEntity>
-
-    @Query("SELECT * FROM short_term_memory WHERE id = :stmId LIMIT 1")
-    suspend fun getById(stmId: Long): ShortTermMemoryEntity?
-
-    @Query(
-        """
-        UPDATE short_term_memory
-        SET updatedAtMs = :updatedAtMs,
-            endAtMs = :endAtMs,
-            end4wId = :end4wId,
-            head4wId = :head4wId,
-            headSummary = :headSummary,
-            summary = :summary
-        WHERE id = :stmId
-        """
-    )
-    suspend fun updateAfterAssign(
-        stmId: Long,
-        updatedAtMs: Long,
-        endAtMs: Long,
-        end4wId: Long,
-        head4wId: Long,
-        headSummary: String,
-        summary: String
-    )
-
-    @Query(
-        """
-        DELETE FROM short_term_memory
-        WHERE updatedAtMs < :olderThanMs
-        """
-    )
-    suspend fun deleteOlderThan(olderThanMs: Long): Int
+    return sb.toString().trimEnd()
 }
 
-// Stm4wLinkDao.kt
-package com.your.app.data.db.stm
+private const val ROUTING_PROMPT: String = """
+역할:
+너는 스마트폰 사용자 행동 로그를 "단기기억(STM, Short-Term Memory)" 단위로 묶는 라우팅 모델이다.
 
-import androidx.room.Dao
-import androidx.room.Insert
-import androidx.room.OnConflictStrategy
-import androidx.room.Query
+정의:
+- 4W(원자 이벤트): 특정 시점에 관측된 사용자 행동 1개를 요약한 문자열이다. (예: "출근 경로를 검색했다")
+- NEW_4W_SUMMARY: 이번에 새로 들어온 4W(원자 이벤트) 요약 1개다.
+- STM: 여러 4W가 시간적으로 이어지며 하나의 흐름(행동 연속성/의도)을 이룬 덩어리다.
+- CANDIDATE_STMS: 최근 24시간 내의 STM 후보 목록이며, 각 후보는 다음을 가진다:
+  - stm_id: STM의 고유 id
+  - endAtMs: 그 STM에 마지막으로 포함된 4W의 시각(ms)
+  - headSummary: 그 STM을 대표하는 4W 요약(핵심)
+  - stmSummary: 그 STM 전체를 한 줄로 요약한 문장
 
-@Dao
-interface Stm4wLinkDao {
+해야 할 일:
+- NEW_4W_SUMMARY가 CANDIDATE_STMS 중 하나의 흐름에 자연스럽게 이어지면 그 stm_id를 선택한다.
+- 어떤 STM에도 자연스럽게 이어지지 않으면 null을 선택한다.
 
-    @Insert(onConflict = OnConflictStrategy.ABORT)
-    suspend fun insert(link: Stm4wLinkEntity): Long
+판단 기준(요약):
+- 같은 과업/목표/맥락의 연속이면 같은 STM으로 본다. (예: "날씨 확인" 다음 "출근 경로 확인"은 출근 준비 흐름으로 이어질 수 있음)
+- 명확히 다른 주제 전환이면 새 STM(null)로 본다.
+- 너무 억지로 끼워 맞추지 말고, 애매하면 null을 선택한다.
 
-    @Query(
-        """
-        SELECT * FROM stm_4w_link
-        WHERE stmId = :stmId
-        ORDER BY eventTimeMs DESC
-        LIMIT :limit
-        """
-    )
-    suspend fun listLatestByStm(stmId: Long, limit: Int): List<Stm4wLinkEntity>
+출력 규칙(매우 중요):
+- 출력은 반드시 JSON 객체 1개만 반환한다. 다른 텍스트, 코드펜스, 설명 금지.
+- 스키마는 아래와 동일해야 한다.
 
-    @Query(
-        """
-        SELECT fourwId FROM stm_4w_link
-        WHERE stmId = :stmId
-        ORDER BY eventTimeMs DESC
-        LIMIT :limit
-        """
-    )
-    suspend fun listLatestFourwIdsByStm(stmId: Long, limit: Int): List<Long>
+출력 JSON 스키마:
+{"stm_id": number|null}
+"""
 
-    @Query("DELETE FROM stm_4w_link WHERE stmId = :stmId")
-    suspend fun deleteByStmId(stmId: Long): Int
+import org.json.JSONObject
 
-    @Query(
-        """
-        DELETE FROM stm_4w_link
-        WHERE stmId = :stmId AND eventTimeMs < :minEventTimeMs
-        """
-    )
-    suspend fun deleteOlderLinksForStm(stmId: Long, minEventTimeMs: Long): Int
+private fun refineRoutingOutputToStmId(raw: String): Long? {
+    val s = raw.trim()
+    val start = s.indexOf('{')
+    val end = s.lastIndexOf('}')
+    require(start >= 0 && end > start) { "No JSON object in model output: $s" }
+
+    val json = JSONObject(s.substring(start, end + 1))
+    if (!json.has("stm_id") || json.isNull("stm_id")) return null
+
+    return try {
+        json.getLong("stm_id")
+    } catch (_: Throwable) {
+        // 혹시 "123" 같은 문자열로 오는 케이스 방어
+        json.optString("stm_id", "").toLongOrNull()
+    }
 }
