@@ -1,1 +1,30 @@
-ㆍ
+import android.content.Context
+import com.google.android.gms.location.LocationServices
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+
+data class SimpleLocation(
+    val lat: Double,
+    val lon: Double,
+    val accuracyM: Float,
+    val timeMs: Long
+)
+
+suspend fun getCurrentLocationOnce(context: Context): SimpleLocation? =
+    suspendCancellableCoroutine { cont ->
+        val client = LocationServices.getFusedLocationProviderClient(context)
+        client.lastLocation
+            .addOnSuccessListener { loc ->
+                if (loc != null) {
+                    cont.resume(
+                        SimpleLocation(
+                            lat = loc.latitude,
+                            lon = loc.longitude,
+                            accuracyM = loc.accuracy,
+                            timeMs = loc.time
+                        )
+                    )
+                } else cont.resume(null)
+            }
+            .addOnFailureListener { cont.resume(null) }
+    }
