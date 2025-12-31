@@ -1,92 +1,22 @@
-import android.content.ContentValues
-import android.content.Context
-import android.os.Build
-import android.provider.MediaStore
-import java.io.BufferedOutputStream
-import java.io.File
-import java.io.FileInputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
-
-fun exportBaseDirZipToDownloads(
-    context: Context,
-    baseDir: File,
-    subFolderInDownloads: String = "ContextLens"
+class StmBatchCounter(
+    private val batchSize: Int = 3   // k개 쌓이면 요약
 ) {
-    require(baseDir.exists() && baseDir.isDirectory) { "baseDir not found: ${baseDir.absolutePath}" }
+    private val counts = mutableMapOf<Long, Int>()
 
-    val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.KOREA).format(Date())
-    val zipName = "contextlens_$ts.zip"
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        val resolver = context.contentResolver
-
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, zipName)
-            put(MediaStore.Downloads.MIME_TYPE, "application/zip")
-            // "Downloads/ContextLens/"로 들어가게 됨
-            put(MediaStore.Downloads.RELATIVE_PATH, "Download/$subFolderInDownloads/")
-            put(MediaStore.Downloads.IS_PENDING, 1)
-        }
-
-        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: error("MediaStore insert failed")
-
-        try {
-            resolver.openOutputStream(uri, "w")!!.use { os ->
-                ZipOutputStream(BufferedOutputStream(os)).use { zos ->
-                    zipDirectoryToStream(baseDir, zos)
-                }
-            }
-            values.clear()
-            values.put(MediaStore.Downloads.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
-        } catch (t: Throwable) {
-            // 실패하면 찌꺼기 제거
-            runCatching { resolver.delete(uri, null, null) }
-            throw t
-        }
-    } else {
-        // API 28 이하는 public Downloads 직접쓰기 (WRITE_EXTERNAL_STORAGE 필요)
-        @Suppress("DEPRECATION")
-        val downloads = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-        val outDir = File(downloads, subFolderInDownloads).apply { mkdirs() }
-        val outFile = File(outDir, zipName)
-
-        outFile.outputStream().use { os ->
-            ZipOutputStream(BufferedOutputStream(os)).use { zos ->
-                zipDirectoryToStream(baseDir, zos)
-            }
-        }
-    }
-}
-
-private fun zipDirectoryToStream(srcDir: File, zos: ZipOutputStream) {
-    val basePath = srcDir.absolutePath.trimEnd(File.separatorChar) + File.separator
-
-    fun addFile(f: File) {
-        val relPath = f.absolutePath.removePrefix(basePath).replace(File.separatorChar, '/')
-        if (f.isDirectory) {
-            val children = f.listFiles().orEmpty()
-            if (children.isEmpty()) {
-                // 빈 폴더도 남기고 싶으면 entry 추가
-                zos.putNextEntry(ZipEntry("$relPath/"))
-                zos.closeEntry()
-            } else {
-                children.forEach { addFile(it) }
-            }
-            return
-        }
-
-        FileInputStream(f).use { fis ->
-            zos.putNextEntry(ZipEntry(relPath))
-            fis.copyTo(zos)
-            zos.closeEntry()
-        }
+    /** 
+     * @return true면 요약 실행
+     */
+    fun onFourwAssigned(stmId: Long): Boolean {
+        val c = (counts[stmId] ?: 0) + 1
+        counts[stmId] = c
+        return c >= batchSize
     }
 
-    srcDir.listFiles().orEmpty().forEach { addFile(it) }
+    fun onSummarized(stmId: Long) {
+        counts[stmId] = 0
+    }
+
+    fun clear(stmId: Long) {
+        counts.remove(stmId)
+    }
 }
