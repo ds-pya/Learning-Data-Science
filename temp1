@@ -1,55 +1,59 @@
-import androidx.room.Entity
-import androidx.room.Index
-import androidx.room.PrimaryKey
+import java.io.File
+import java.nio.charset.StandardCharsets
 
-@Entity(
-    tableName = "stm_history",
-    indices = [
-        Index(value = ["stmId", "snapshotAtMs"]),
-        Index(value = ["snapshotAtMs"])
-    ]
-)
-data class StmHistoryEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+suspend fun exportStmHistoryRdb(
+    dstDir: File,
+    stmHistoryDao: StmHistoryDao,
+    nowMs: Long = System.currentTimeMillis()
+) {
+    val minMs = nowMs - 24L * 60 * 60 * 1000
+    val rows = stmHistoryDao.listRecent24h(minMs)
 
-    val stmId: Long,
-    val snapshotAtMs: Long,     // 스냅샷 생성 시각(System.currentTimeMillis())
+    val outFile = File(dstDir, "stm_history.csv")
+    outFile.parentFile?.mkdirs()
 
-    // 스냅샷 당시 STM 상태(최소)
-    val head4wId: Long,
-    val headSummary: String,
-    val stmSummary: String,
+    outFile.outputStream().use { os ->
+        // BOM
+        os.write(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()))
 
-    val start4wId: Long,
-    val end4wId: Long,
-    val startAtMs: Long,
-    val endAtMs: Long
-)
+        fun w(s: String) = os.write(s.toByteArray(StandardCharsets.UTF_8))
 
-import androidx.room.Dao
-import androidx.room.Insert
-import androidx.room.OnConflictStrategy
-import androidx.room.Query
+        fun escapeCsv(s: String): String {
+            val needsQuote = s.any { it == ',' || it == '"' || it == '\n' || it == '\r' }
+            val escaped = s.replace("\"", "\"\"")
+            return if (needsQuote) "\"$escaped\"" else escaped
+        }
 
-@Dao
-interface StmHistoryDao {
+        w(
+            listOf(
+                "id",
+                "stmId",
+                "snapshotAtMs",
+                "head4wId",
+                "headSummary",
+                "stmSummary",
+                "start4wId",
+                "end4wId",
+                "startAtMs",
+                "endAtMs"
+            ).joinToString(",") + "\n"
+        )
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertIgnore(row: StmHistoryEntity): Long
-
-    @Query("""
-        SELECT *
-        FROM stm_history
-        WHERE stmId = :stmId
-        ORDER BY snapshotAtMs ASC
-    """)
-    suspend fun listByStmId(stmId: Long): List<StmHistoryEntity>
-
-    @Query("""
-        SELECT *
-        FROM stm_history
-        WHERE snapshotAtMs >= :minSnapshotAtMs
-        ORDER BY snapshotAtMs ASC
-    """)
-    suspend fun listRecent24h(minSnapshotAtMs: Long): List<StmHistoryEntity>
+        rows.forEach { r ->
+            w(
+                listOf(
+                    r.id.toString(),
+                    r.stmId.toString(),
+                    r.snapshotAtMs.toString(),
+                    r.head4wId.toString(),
+                    escapeCsv(r.headSummary),
+                    escapeCsv(r.stmSummary),
+                    r.start4wId.toString(),
+                    r.end4wId.toString(),
+                    r.startAtMs.toString(),
+                    r.endAtMs.toString()
+                ).joinToString(",") + "\n"
+            )
+        }
+    }
 }
