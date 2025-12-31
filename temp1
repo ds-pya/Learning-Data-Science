@@ -1,22 +1,32 @@
-class StmBatchCounter(
-    private val batchSize: Int = 3   // k개 쌓이면 요약
-) {
-    private val counts = mutableMapOf<Long, Int>()
+private const val NOTI_ID = 1001
 
-    /** 
-     * @return true면 요약 실행
-     */
-    fun onFourwAssigned(stmId: Long): Boolean {
-        val c = (counts[stmId] ?: 0) + 1
-        counts[stmId] = c
-        return c >= batchSize
-    }
+private fun showToggleNotification(isOn: Boolean): android.app.Notification {
+    // ✅ 지금 쓰고 있는 방식 그대로 "Notification"을 만들고
+    // NotificationManager.notify(NOTI_ID, notification) 하던 걸
+    // 여기서는 notification을 "리턴"만 하게 바꾸세요.
+    //
+    // (채널 생성/세부 구성은 기존 코드 유지)
 
-    fun onSummarized(stmId: Long) {
-        counts[stmId] = 0
-    }
+    val notification = /* 기존 showToggleNotification에서 만들던 Notification */
+    val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+    nm.notify(NOTI_ID, notification)
+    return notification
+}
 
-    fun clear(stmId: Long) {
-        counts.remove(stmId)
+private fun enterForeground(isOn: Boolean) {
+    val noti = showToggleNotification(isOn)
+    startForeground(NOTI_ID, noti)
+}
+
+private fun exitForeground() {
+    // API 차이 커버
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+    } else {
+        @Suppress("DEPRECATION")
+        stopForeground(true)
     }
+    // 알림도 제거하고 싶으면:
+    val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+    nm.cancel(NOTI_ID)
 }
