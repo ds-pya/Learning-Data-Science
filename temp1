@@ -1,77 +1,23 @@
-import java.io.File
-import java.nio.charset.StandardCharsets
+내일 할것
 
-suspend fun exportStmRdb(
-    dstDir: File,
-    stmDao: ShortTermMemoryDao,
-    linkDao: Stm4wLinkDao,
-    nowMs: Long = System.currentTimeMillis()
-) {
-    val minUpdatedAtMs = nowMs - 24L * 60 * 60 * 1000
+1. GPS value null issue 처리
 
-    // 1) rows
-    val stms = stmDao.listRecentAllForExport(minUpdatedAtMs)
-    val stmIds = stms.map { it.id }
 
-    val linkMap: Map<Long, List<Long>> =
-        if (stmIds.isEmpty()) emptyMap()
-        else linkDao.listLinksForStmIds(stmIds)
-            .groupBy({ it.stmId }, { it.fourwId })
+2. STM history RDB 및 export 로직 추가
 
-    // 2) outfile
-    val outFile = File(dstDir, "stm.csv")
-    outFile.parentFile?.mkdirs()
 
-    outFile.outputStream().use { os ->
-        // BOM (Excel friendly)
-        os.write(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()))
+3. 앱 데이터 저장소의 데이터 -> 폰 Download 폴더로 압축&복사 하는 로직 및 동작 버튼 추가
 
-        fun w(s: String) = os.write(s.toByteArray(StandardCharsets.UTF_8))
 
-        fun escapeCsv(s: String): String {
-            val needsQuote = s.any { it == ',' || it == '"' || it == '\n' || it == '\r' }
-            val escaped = s.replace("\"", "\"\"")
-            return if (needsQuote) "\"$escaped\"" else escaped
-        }
+4. 스텝별 지연/큐 발생 횟수 로그 찍기 및 두세개 상황별 1분당 queue 발생 횟수 체크
 
-        // header
-        w(
-            listOf(
-                "id",
-                "createdAtMs",
-                "updatedAtMs",
-                "startAtMs",
-                "endAtMs",
-                "start4wId",
-                "end4wId",
-                "head4wId",
-                "headSummary",
-                "summary",
-                "all4wIds"
-            ).joinToString(",") + "\n"
-        )
 
-        // rows
-        stms.forEach { stm ->
-            val all4wIds = (linkMap[stm.id] ?: emptyList())
-                .distinct()
-                .joinToString(";") // local join friendly
+5. 분류모델 llm의 output에 신뢰도 추가, 신뢰도 및 상황에 따른 llm->vlm 직렬 분석 방식으로 변경
 
-            w(
-                listOf(
-                    stm.id.toString(),
-                    stm.createdAtMs.toString(),
-                    stm.updatedAtMs.toString(),
-                    stm.startAtMs.toString(),
-                    stm.endAtMs.toString(),
-                    stm.start4wId.toString(),
-                    stm.end4wId.toString(),
-                    stm.head4wId.toString(),
-                    escapeCsv(stm.headSummary),
-                    escapeCsv(stm.summary),
-                    escapeCsv(all4wIds)
-                ).joinToString(",") + "\n"
-            )
-        }
-    }
-}
+
+6. 요약llm에 대한 배치방식 변경
+
+
+7. 포어그라운드 권한및 service에 모드 추가, 빌드폰 테스트 및 apk 내려서 유저폰에서 테스트
+
+
