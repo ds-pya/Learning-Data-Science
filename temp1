@@ -1,23 +1,55 @@
-내일 할것
+import androidx.room.Entity
+import androidx.room.Index
+import androidx.room.PrimaryKey
 
-1. GPS value null issue 처리
+@Entity(
+    tableName = "stm_history",
+    indices = [
+        Index(value = ["stmId", "snapshotAtMs"]),
+        Index(value = ["snapshotAtMs"])
+    ]
+)
+data class StmHistoryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
 
+    val stmId: Long,
+    val snapshotAtMs: Long,     // 스냅샷 생성 시각(System.currentTimeMillis())
 
-2. STM history RDB 및 export 로직 추가
+    // 스냅샷 당시 STM 상태(최소)
+    val head4wId: Long,
+    val headSummary: String,
+    val stmSummary: String,
 
+    val start4wId: Long,
+    val end4wId: Long,
+    val startAtMs: Long,
+    val endAtMs: Long
+)
 
-3. 앱 데이터 저장소의 데이터 -> 폰 Download 폴더로 압축&복사 하는 로직 및 동작 버튼 추가
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
 
+@Dao
+interface StmHistoryDao {
 
-4. 스텝별 지연/큐 발생 횟수 로그 찍기 및 두세개 상황별 1분당 queue 발생 횟수 체크
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnore(row: StmHistoryEntity): Long
 
+    @Query("""
+        SELECT *
+        FROM stm_history
+        WHERE stmId = :stmId
+        ORDER BY snapshotAtMs ASC
+    """)
+    suspend fun listByStmId(stmId: Long): List<StmHistoryEntity>
 
-5. 분류모델 llm의 output에 신뢰도 추가, 신뢰도 및 상황에 따른 llm->vlm 직렬 분석 방식으로 변경
-
-
-6. 요약llm에 대한 배치방식 변경
-
-
-7. 포어그라운드 권한및 service에 모드 추가, 빌드폰 테스트 및 apk 내려서 유저폰에서 테스트
-
-
+    @Query("""
+        SELECT *
+        FROM stm_history
+        WHERE snapshotAtMs >= :minSnapshotAtMs
+        ORDER BY snapshotAtMs ASC
+    """)
+    suspend fun listRecent24h(minSnapshotAtMs: Long): List<StmHistoryEntity>
+}
