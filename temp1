@@ -1,32 +1,118 @@
-private const val NOTI_ID = 1001
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 
-private fun showToggleNotification(isOn: Boolean): android.app.Notification {
-    // ✅ 지금 쓰고 있는 방식 그대로 "Notification"을 만들고
-    // NotificationManager.notify(NOTI_ID, notification) 하던 걸
-    // 여기서는 notification을 "리턴"만 하게 바꾸세요.
-    //
-    // (채널 생성/세부 구성은 기존 코드 유지)
-
-    val notification = /* 기존 showToggleNotification에서 만들던 Notification */
-    val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-    nm.notify(NOTI_ID, notification)
-    return notification
+data class QueueMonitorSnapshot(
+    val pendingCount: Long,
+    val doneCount: Long,
+    val actionLlmRuns: Long,
+    val visionVlmRuns: Long,
+    val routeLlmRuns: Long,
+    val summaryLlmRuns: Long,
+) {
+    val totalModelRuns: Long
+        get() = actionLlmRuns + visionVlmRuns + routeLlmRuns + summaryLlmRuns
 }
 
-private fun enterForeground(isOn: Boolean) {
-    val noti = showToggleNotification(isOn)
-    startForeground(NOTI_ID, noti)
-}
+@Composable
+fun QueueMonitorCard(
+    isRunning: Boolean,                // manager 상태(ON/OFF)
+    snapshot: QueueMonitorSnapshot?,   // null이면 아직 로딩 전
+    isLoading: Boolean,                // refresh 중 표시
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(modifier = modifier) {
+        Column(Modifier.padding(16.dp)) {
 
-private fun exitForeground() {
-    // API 차이 커버
-    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-        stopForeground(STOP_FOREGROUND_REMOVE)
-    } else {
-        @Suppress("DEPRECATION")
-        stopForeground(true)
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Queue Monitor",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = onRefresh, enabled = !isLoading) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Status row: Running / Pending / Done
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MetricChip(
+                    label = "Running",
+                    value = if (isRunning) "ON" else "OFF",
+                    modifier = Modifier.weight(1f)
+                )
+                MetricChip(
+                    label = "Pending",
+                    value = snapshot?.pendingCount?.toString() ?: "-",
+                    modifier = Modifier.weight(1f)
+                )
+                MetricChip(
+                    label = "Done",
+                    value = snapshot?.doneCount?.toString() ?: "-",
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Model runs (Total + per-model)
+            Text(
+                text = "Model runs (last 24h window)",
+                style = MaterialTheme.typography.labelLarge
+            )
+            Spacer(Modifier.height(6.dp))
+
+            val total = snapshot?.totalModelRuns
+            KeyValueLine("Total", total?.toString() ?: "-")
+
+            Divider(Modifier.padding(vertical = 8.dp))
+
+            KeyValueLine("Action LLM", snapshot?.actionLlmRuns?.toString() ?: "-")
+            KeyValueLine("Vision VLM", snapshot?.visionVlmRuns?.toString() ?: "-")
+            KeyValueLine("Route LLM", snapshot?.routeLlmRuns?.toString() ?: "-")
+            KeyValueLine("Summary LLM", snapshot?.summaryLlmRuns?.toString() ?: "-")
+
+            if (isLoading) {
+                Spacer(Modifier.height(10.dp))
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        }
     }
-    // 알림도 제거하고 싶으면:
-    val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-    nm.cancel(NOTI_ID)
+}
+
+@Composable
+private fun MetricChip(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(
+        tonalElevation = 1.dp,
+        shape = MaterialTheme.shapes.medium,
+        modifier = modifier
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(label, style = MaterialTheme.typography.labelMedium)
+            Text(value, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun KeyValueLine(key: String, value: String) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(key, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+    }
 }
