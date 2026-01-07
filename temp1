@@ -1,366 +1,357 @@
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-data class StmCardUi(
-    val stmId: Long,
-    val createdAtMs: Long,
-    val summary: String?,
-)
+// --- DAOs (당신 프로젝트의 실제 DAO로 교체) ---
+interface AnalysisQueueDao {
+    suspend fun getQueueMonitorSnapshot(minEventTimeMs: Long): QueueMonitorSnapshot
+}
 
+interface ShortTermMemoryDao {
+    suspend fun listRecentStmDtos(minCreatedAtMs: Long, limit: Int = 50): List<StmListItemDto>
+}
+
+interface FourwLogDao {
+    suspend fun listFourwDtosByStmId(stmId: Long, limit: Int = 50): List<FourwListItemDto>
+}
+
+// --- DTOs (DAO projection) ---
+data class StmListItemDto(val stmId: Long, val createdAtMs: Long, val summary: String?)
+data class FourwListItemDto(val fourwId: Long, val eventTimeMs: Long, val summary: String?, val screenshotUri: String?)
+
+// --- Queue snapshot (이미 앞에서 정의한 것 그대로) ---
+data class QueueMonitorSnapshot(
+    val pendingCount: Long,
+    val doneCount: Long,
+    val actionLlmRuns: Long,
+    val visionVlmRuns: Long,
+    val routeLlmRuns: Long,
+    val summaryLlmRuns: Long,
+) {
+    val totalModelRuns: Long
+        get() = actionLlmRuns + visionVlmRuns + routeLlmRuns + summaryLlmRuns
+}
+
+// --- STM / 4W UI models ---
+data class StmCardUi(val stmId: Long, val createdAtMs: Long, val summary: String?)
 data class FourwCardUi(
     val fourwId: Long,
     val eventTimeMs: Long,
     val summary: String?,
-    val screenshotThumb: ImageBitmap?,
-    val screenshotFull: ImageBitmap?,
+    val screenshotThumb: androidx.compose.ui.graphics.ImageBitmap?,
+    val screenshotFull: androidx.compose.ui.graphics.ImageBitmap?,
 )
 
-@Composable
-fun StmTimelineCard(
-    // STM 리스트 로드(24h/limit 등은 구현부에서)
-    loadStms: suspend () -> List<StmCardUi>,
-    // 특정 STM의 fourw 리스트 로드
-    loadFourwsForStm: suspend (stmId: Long) -> List<FourwCardUi>,
-    onOpenFourwDetail: (fourwId: Long) -> Unit,
+// --- Bitmap loader abstraction (uri/file -> thumb/full) ---
+interface BitmapLoader {
+    suspend fun loadThumb(uri: String?): androidx.compose.ui.graphics.ImageBitmap?
+    suspend fun loadFull(uri: String?): androidx.compose.ui.graphics.ImageBitmap?
+}
 
-    modifier: Modifier = Modifier,
-) {
-    var expandedStmId by rememberSaveable { mutableStateOf<Long?>(null) }
+// --- UI State ---
+data class MainUiState(
+    // Queue card
+    val isRunning: Boolean = false, // manager 상태를 여기에 세팅(아래 setRunning)
+    val queueSnapshot: QueueMonitorSnapshot? = null,
+    val queueLoading: Boolean = false,
 
-    // STM 리스트 상태 (수동 refresh)
-    var stmCards by remember { mutableStateOf<List<StmCardUi>>(emptyList()) }
-    var loadingStm by remember { mutableStateOf(false) }
+    // STM card
+    val stmLoading: Boolean = false,
+    val stmCards: List<StmCardUi> = emptyList(),
+)
 
-    // 펼친 STM의 fourw 캐시 (refresh 시 초기화)
-    val fourwCache = remember { mutableStateMapOf<Long, List<FourwCardUi>>() }
+class MainViewModel(
+    private val analysisQueueDao: AnalysisQueueDao,
+    private val stmDao: ShortTermMemoryDao,
+    private val fourwDao: FourwLogDao,
+    private val bitmapLoader: BitmapLoader,
+) : ViewModel() {
 
-    // 이미지 확대
-    var previewImage by remember { mutableStateOf<ImageBitmap?>(null) }
+    var uiState: MainUiState = MainUiState()
+        private set
 
-    suspend fun refreshStmList() {
-        loadingStm = true
-        try {
-            val rows = loadStms()
-            stmCards = rows
-            // 새로고침 시: 확장/캐시 초기화(데이터 일관성)
-            expandedStmId = null
-            fourwCache.clear()
-        } finally {
-            loadingStm = false
+    private fun nowMs(): Long = System.currentTimeMillis()
+    private fun last24hMinMs(): Long = nowMs() - 24L * 60L * 60L * 1000L
+
+    fun setRunning(isRunning: Boolean) {
+        uiState = uiState.copy(isRunning = isRunning)
+    }
+
+    /** MainScreen 첫 진입 시 1회 */
+    fun initLoad() {
+        refreshQueue()
+        refreshStmList()
+    }
+
+    // -----------------------
+    // Queue card
+    // -----------------------
+    fun refreshQueue() {
+        if (uiState.queueLoading) return
+        uiState = uiState.copy(queueLoading = true)
+
+        viewModelScope.launch {
+            try {
+                val snap = analysisQueueDao.getQueueMonitorSnapshot(minEventTimeMs = last24hMinMs())
+                uiState = uiState.copy(queueSnapshot = snap)
+            } finally {
+                uiState = uiState.copy(queueLoading = false)
+            }
         }
     }
 
-    // ✅ 첫 화면 로딩 1회
-    LaunchedEffect(Unit) { refreshStmList() }
+    // -----------------------
+    // STM card
+    // -----------------------
+    fun refreshStmList(limit: Int = 50) {
+        if (uiState.stmLoading) return
+        uiState = uiState.copy(stmLoading = true)
+
+        viewModelScope.launch {
+            try {
+                val dtos = stmDao.listRecentStmDtos(minCreatedAtMs = last24hMinMs(), limit = limit)
+                val cards = dtos.map { StmCardUi(it.stmId, it.createdAtMs, it.summary) }
+                uiState = uiState.copy(stmCards = cards)
+            } finally {
+                uiState = uiState.copy(stmLoading = false)
+            }
+        }
+    }
+
+    /** STM 확장 시 4W 로드 (eventTime desc는 DAO에서 보장) */
+    suspend fun loadFourwsForStm(stmId: Long, limit: Int = 50): List<FourwCardUi> {
+        val dtos = fourwDao.listFourwDtosByStmId(stmId = stmId, limit = limit)
+
+        // 이미지 로딩은 IO로
+        return withContext(Dispatchers.IO) {
+            dtos.map { dto ->
+                val thumb = bitmapLoader.loadThumb(dto.screenshotUri)
+                val full = bitmapLoader.loadFull(dto.screenshotUri)
+                FourwCardUi(
+                    fourwId = dto.fourwId,
+                    eventTimeMs = dto.eventTimeMs,
+                    summary = dto.summary,
+                    screenshotThumb = thumb,
+                    screenshotFull = full
+                )
+            }
+        }
+    }
+}
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+
+@Composable
+fun MainScreen(
+    viewModel: MainViewModel,
+    onOpenFourwDetail: (fourwId: Long) -> Unit,
+) {
+    // 첫 화면 1회 로딩(두 카드 모두)
+    LaunchedEffect(Unit) { viewModel.initLoad() }
+
+    // ViewModel이 var uiState로 들고 있으니 Compose에서 관측하기 위해 snapshot 읽기
+    // (실제 프로젝트에선 mutableStateOf/StateFlow로 더 예쁘게 해도 됨)
+    val state = viewModel.uiState
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        // 1) Queue Monitor Card (당신이 이미 받았던 컴포넌트)
+        QueueMonitorCard(
+            isRunning = state.isRunning,
+            snapshot = state.queueSnapshot,
+            isLoading = state.queueLoading,
+            onRefresh = { viewModel.refreshQueue() },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        // 2) STM Timeline Card (수동 refresh + 확장 append)
+        val scope = rememberCoroutineScope()
+
+        StmTimelineCardWithRefresh(
+            stmCards = state.stmCards,
+            isLoading = state.stmLoading,
+            onRefresh = { viewModel.refreshStmList() },
+            loadFourwsForStm = { stmId -> viewModel.loadFourwsForStm(stmId) },
+            onOpenFourwDetail = onOpenFourwDetail,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+/**
+ * STM 카드: 우상단 refresh + STM 클릭 시 4W append + 이미지 확대 + 4W 상세 콜백
+ * (이 컴포넌트는 MainScreen에만 쓰는 “wrapper” 느낌)
+ */
+@Composable
+fun StmTimelineCardWithRefresh(
+    stmCards: List<StmCardUi>,
+    isLoading: Boolean,
+    onRefresh: () -> Unit,
+    loadFourwsForStm: suspend (stmId: Long) -> List<FourwCardUi>,
+    onOpenFourwDetail: (fourwId: Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+
+    // 어떤 STM이 펼쳐졌는지
+    var expandedStmId by rememberSaveable { mutableStateOf<Long?>(null) }
+
+    // 펼친 STM의 fourw 캐시 (refresh 시 clear 권장)
+    val fourwCache = remember { mutableStateMapOf<Long, List<FourwCardUi>>() }
+
+    // 이미지 확대
+    var previewImage by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
 
     Card(modifier = modifier) {
         Column(Modifier.padding(16.dp)) {
 
             // Header + refresh
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "STM Timeline",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f)
-                )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("STM Timeline", style = MaterialTheme.typography.titleMedium)
                 IconButton(
-                    onClick = { /* 수동 refresh */ },
-                    enabled = !loadingStm
-                ) {}
-                IconButton(
-                    onClick = { /* placeholder */ },
-                    enabled = false
-                ) {}
-                IconButton(
-                    onClick = { /* placeholder */ },
-                    enabled = false
-                ) {}
-                IconButton(
-                    onClick = { /* placeholder */ },
-                    enabled = false
-                ) {}
-                IconButton(
-                    onClick = { /* placeholder */ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /* 수동 refresh */ },
-                    enabled = !loadingStm
-                ) {}
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                IconButton(
-                    onClick = { /*noop*/ },
-                    enabled = false
-                ) {}
-
-                // ✅ 진짜 refresh 버튼 (위에 placeholder들이 섞였으니 아래 단순 버전 쓰세요)
-            }
-
-            // 위 Row에 placeholder를 잔뜩 넣은 건 실수입니다.
-            // 아래 Row로 교체해서 쓰세요. (그대로 복사/붙여넣기)
-
-            /*
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "STM Timeline",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f)
-                )
-                IconButton(
-                    onClick = { scope.launch { refreshStmList() } },
-                    enabled = !loadingStm
+                    onClick = {
+                        expandedStmId = null
+                        fourwCache.clear()
+                        onRefresh()
+                    },
+                    enabled = !isLoading
                 ) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                    Icon(
+                        imageVector = androidx.compose.material.icons.Icons.Filled.Refresh,
+                        contentDescription = "Refresh"
+                    )
                 }
             }
-            */
 
-            if (loadingStm) {
-                Spacer(Modifier.height(10.dp))
+            if (isLoading) {
+                Spacer(Modifier.height(8.dp))
                 LinearProgressIndicator(Modifier.fillMaxWidth())
             }
 
             Spacer(Modifier.height(12.dp))
 
-            if (!loadingStm && stmCards.isEmpty()) {
-                Text("No STM in last 24h.", style = MaterialTheme.typography.bodyMedium)
+            if (!isLoading && stmCards.isEmpty()) {
+                Text("No STM in last 24h.")
                 return@Column
             }
 
             // 리스트
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(stmCards, key = { it.stmId }) { stm ->
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                stmCards.forEach { stm ->
                     val isExpanded = expandedStmId == stm.stmId
 
-                    StmSummaryCard(
-                        summary = stm.summary ?: "(no summary)",
-                        isExpanded = isExpanded,
+                    Card(
                         onClick = {
                             expandedStmId = if (isExpanded) null else stm.stmId
+                        },
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isExpanded) MaterialTheme.colorScheme.surfaceVariant
+                            else MaterialTheme.colorScheme.surface
+                        )
+                    ) {
+                        Row(Modifier.fillMaxWidth().padding(14.dp)) {
+                            Text(
+                                text = stm.summary ?: "(no summary)",
+                                maxLines = if (isExpanded) 4 else 2,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(if (isExpanded) "▲" else "▼")
                         }
-                    )
+                    }
 
                     if (isExpanded) {
-                        Spacer(Modifier.height(6.dp))
-
                         val cached = fourwCache[stm.stmId]
                         if (cached == null) {
-                            FourwLoadingBlock(
-                                onLoad = {
-                                    val rows = loadFourwsForStm(stm.stmId)
-                                    fourwCache[stm.stmId] = rows
-                                }
-                            )
+                            // 최초 확장 시 로드
+                            Row(Modifier.fillMaxWidth().padding(start = 6.dp, top = 6.dp)) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(10.dp))
+                                Text("Loading 4W…")
+                            }
+
+                            LaunchedEffect(stm.stmId) {
+                                val rows = loadFourwsForStm(stm.stmId)
+                                fourwCache[stm.stmId] = rows
+                            }
                         } else {
+                            Spacer(Modifier.height(6.dp))
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 cached.forEach { fourw ->
-                                    FourwMiniCard(
-                                        summary = fourw.summary ?: "(no summary)",
-                                        thumb = fourw.screenshotThumb,
-                                        onThumbClick = {
-                                            previewImage = fourw.screenshotFull ?: fourw.screenshotThumb
-                                        },
-                                        onCardClick = { onOpenFourwDetail(fourw.fourwId) }
-                                    )
+                                    Card(onClick = { onOpenFourwDetail(fourw.fourwId) }) {
+                                        Row(
+                                            Modifier.fillMaxWidth().padding(12.dp),
+                                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                        ) {
+                                            // left thumbnail
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(56.dp)
+                                                    .clip(MaterialTheme.shapes.medium)
+                                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                                                    .clickable {
+                                                        previewImage =
+                                                            fourw.screenshotFull ?: fourw.screenshotThumb
+                                                    },
+                                                contentAlignment = androidx.compose.ui.Alignment.Center
+                                            ) {
+                                                if (fourw.screenshotThumb != null) {
+                                                    androidx.compose.foundation.Image(
+                                                        bitmap = fourw.screenshotThumb,
+                                                        contentDescription = "thumb",
+                                                        modifier = Modifier.fillMaxSize()
+                                                    )
+                                                } else {
+                                                    Text("IMG", style = MaterialTheme.typography.labelMedium)
+                                                }
+                                            }
+
+                                            Spacer(Modifier.width(12.dp))
+
+                                            Text(
+                                                text = fourw.summary ?: "(no summary)",
+                                                maxLines = 3,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
-
-                        Spacer(Modifier.height(8.dp))
                     }
                 }
             }
         }
     }
 
+    // 큰 이미지 다이얼로그
     if (previewImage != null) {
         AlertDialog(
             onDismissRequest = { previewImage = null },
             confirmButton = { TextButton(onClick = { previewImage = null }) { Text("Close") } },
             text = {
-                Image(
+                androidx.compose.foundation.Image(
                     bitmap = previewImage!!,
                     contentDescription = "Screenshot",
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(9f / 16f)
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(MaterialTheme.shapes.large)
                 )
             }
         )
-    }
-}
-
-@Composable
-private fun StmSummaryCard(summary: String, isExpanded: Boolean, onClick: () -> Unit) {
-    Card(
-        onClick = onClick,
-        colors = CardDefaults.cardColors(
-            containerColor = if (isExpanded) MaterialTheme.colorScheme.surfaceVariant
-            else MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = summary,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = if (isExpanded) 4 else 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(if (isExpanded) "▲" else "▼", style = MaterialTheme.typography.labelLarge)
-        }
-    }
-}
-
-@Composable
-private fun FourwLoadingBlock(onLoad: suspend () -> Unit) {
-    var loading by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) {
-        loading = true
-        onLoad()
-        loading = false
-    }
-    if (loading) {
-        Row(
-            Modifier.fillMaxWidth().padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            Spacer(Modifier.width(10.dp))
-            Text("Loading 4W…", style = MaterialTheme.typography.bodyMedium)
-        }
-    }
-}
-
-@Composable
-private fun FourwMiniCard(
-    summary: String,
-    thumb: ImageBitmap?,
-    onThumbClick: () -> Unit,
-    onCardClick: () -> Unit
-) {
-    Card(onClick = onCardClick) {
-        Row(
-            Modifier.fillMaxWidth().padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable(onClick = onThumbClick),
-                contentAlignment = Alignment.Center
-            ) {
-                if (thumb != null) {
-                    Image(bitmap = thumb, contentDescription = "thumb", modifier = Modifier.fillMaxSize())
-                } else {
-                    Text("IMG", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-                }
-            }
-
-            Spacer(Modifier.width(12.dp))
-
-            Text(
-                text = summary,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-        }
     }
 }
