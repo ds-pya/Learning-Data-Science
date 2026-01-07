@@ -1,55 +1,67 @@
-data class FourwDetailUi(
-    val loading: Boolean = true,
-    val error: String? = null,
-    val packageName: String? = null,
-    val sourceLabel: String = "N/A",   // "VLM" or "LLM"
-    val action: String? = null,
-    val filtered: List<String> = emptyList(),
-    val summary: String? = null,       // optional
-)
+class BitmapLoaderImpl(
+    private val appContext: Context
+) : BitmapLoader {
 
-fun loadFourwDetailUi(fourwId: Long): Flow<FourwDetailUi> = flow {
-    emit(FourwDetailUi(loading = true))
+    override suspend fun loadThumb(uri: String?): ImageBitmap? =
+        decode(uri, maxWidth = 360, maxHeight = 640)
 
-    val row = fourwDao.selectById(fourwId)
-    val pkg = row.packageName
+    override suspend fun loadFull(uri: String?): ImageBitmap? =
+        decode(uri, maxWidth = 1080, maxHeight = 1920)
 
-    val jsonStr = row.vlmJson ?: row.llmJson
-    val source = if (row.vlmJson != null) "VLM" else "LLM"
+    private suspend fun decode(uri: String?, maxWidth: Int, maxHeight: Int): ImageBitmap? {
+        if (uri.isNullOrBlank()) return null
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val u = Uri.parse(uri)
+                val resolver = appContext.contentResolver
 
-    val parsed = parseActionFiltered(jsonStr)
-
-    emit(
-        FourwDetailUi(
-            loading = false,
-            packageName = pkg,
-            sourceLabel = source,
-            action = parsed.first,
-            filtered = parsed.second,
-            summary = row.summary
-        )
-    )
-}.catch { t ->
-    emit(FourwDetailUi(loading = false, error = t.message ?: "load failed"))
-}.flowOn(Dispatchers.IO)
-
-private fun parseActionFiltered(jsonStr: String?): Pair<String?, List<String>> {
-    if (jsonStr.isNullOrBlank()) return null to emptyList()
-    return try {
-        val obj = JSONObject(jsonStr)
-        val action = obj.optString("action").takeIf { it.isNotBlank() }
-        val arr = obj.optJSONArray("filtered")
-        val filtered = buildList {
-            if (arr != null) {
-                for (i in 0 until arr.length()) {
-                    val s = arr.optString(i).trim()
-                    if (s.isNotEmpty()) add(s)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                openInputStream(u, resolver).use { input ->
+                    if (input == null) return@runCatching null
+                    BitmapFactory.decodeStream(input, null, bounds)
                 }
-            }
+
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+
+                val sample = calcInSampleSize(bounds.outWidth, bounds.outHeight, maxWidth, maxHeight)
+
+                val opts = BitmapFactory.Options().apply {
+                    inJustDecodeBounds = false
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                    inDither = true
+                }
+
+                val bmp = openInputStream(u, resolver).use { input ->
+                    if (input == null) return@runCatching null
+                    BitmapFactory.decodeStream(input, null, opts)
+                } ?: return@runCatching null
+
+                bmp.asImageBitmap()
+            }.getOrNull()
         }
-        action to filtered
-    } catch (_: Throwable) {
-        null to emptyList()
+    }
+
+    private fun openInputStream(u: Uri, resolver: ContentResolver): InputStream? {
+        return when (u.scheme) {
+            "content", "file" -> resolver.openInputStream(u)
+            null -> FileInputStream(u.toString())
+            else -> FileInputStream(u.toString())
+        }
+    }
+
+    private fun calcInSampleSize(
+        srcW: Int,
+        srcH: Int,
+        reqW: Int,
+        reqH: Int
+    ): Int {
+        var inSample = 1
+        var halfW = srcW / 2
+        var halfH = srcH / 2
+        while (halfW / inSample >= reqW && halfH / inSample >= reqH) {
+            inSample *= 2
+        }
+        return inSample.coerceAtLeast(1)
     }
 }
-```0
