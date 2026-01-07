@@ -1,152 +1,96 @@
 @Composable
-fun StmTimelineCard(
-    loadStms: suspend () -> List<StmCardUi>,
-    loadFourwsForStm: suspend (Long) -> List<FourwCardUi>,
-    onOpenFourwDetail: (Long) -> Unit,
-    modifier: Modifier = Modifier,
+fun FourwDetailDialog(
+    fourwId: Long,
+    onDismiss: () -> Unit,
+    viewModel: FourwDetailViewModel = hiltViewModel(),
 ) {
-    val scope = rememberCoroutineScope()
+    val uiState by viewModel.loadFourwDetail(fourwId).collectAsStateWithLifecycle()
 
-    var loading by remember { mutableStateOf(false) }
-    var stmItems by remember { mutableStateOf<List<StmCardUi>>(emptyList()) }
-    var expandedStmId by rememberSaveable { mutableStateOf<Long?>(null) }
-
-    val fourwCache = remember { mutableStateMapOf<Long, List<FourwCardUi>>() }
-    val fourwLoading = remember { mutableStateMapOf<Long, Boolean>() }
-
-    var previewImage by remember { mutableStateOf<ImageBitmap?>(null) }
-
-    fun refresh() {
-        if (loading) return
-        loading = true
-        scope.launch {
-            try {
-                stmItems = loadStms()
-                expandedStmId = null
-                fourwCache.clear()
-                fourwLoading.clear()
-            } finally {
-                loading = false
-            }
-        }
-    }
-
-    fun ensureFourw(stmId: Long) {
-        if (fourwCache.containsKey(stmId)) return
-        if (fourwLoading[stmId] == true) return
-        fourwLoading[stmId] = true
-        scope.launch {
-            try {
-                fourwCache[stmId] = loadFourwsForStm(stmId)
-            } finally {
-                fourwLoading[stmId] = false
-            }
-        }
-    }
-
-    LaunchedEffect(Unit) { refresh() }
-
-    Card(modifier = modifier) {
-        Column(Modifier.padding(16.dp)) {
-
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "STM Timeline",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f)
-                )
-                IconButton(onClick = { refresh() }, enabled = !loading) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        },
+        title = {
+            Text(uiState.packageName ?: "Unknown")
+        },
+        text = {
+            when {
+                uiState.loading -> {
+                    CircularProgressIndicator()
                 }
-            }
+                uiState.error != null -> {
+                    Text(uiState.error!!)
+                }
+                else -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
-            if (loading) {
-                Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            if (!loading && stmItems.isEmpty()) {
-                Text("No STM in last 24h.")
-                return@Column
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                stmItems.forEach { stm ->
-                    val isExpanded = expandedStmId == stm.stmId
-
-                    StmSummaryCard(
-                        summary = stm.summary ?: "(no summary)",
-                        isExpanded = isExpanded,
-                        onClick = {
-                            expandedStmId = if (isExpanded) null else stm.stmId
-                            if (!isExpanded) ensureFourw(stm.stmId)
-                        }
-                    )
-
-                    if (isExpanded) {
-                        Spacer(Modifier.height(6.dp))
-
-                        when {
-                            fourwLoading[stm.stmId] == true -> {
-                                FourwLoadingBlock()
-                            }
-                            else -> {
-                                val rows = fourwCache[stm.stmId].orEmpty()
-                                if (rows.isEmpty()) {
-                                    Text(
-                                        "No 4W linked.",
-                                        modifier = Modifier.padding(start = 6.dp)
-                                    )
-                                } else {
-                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        rows.forEach { fourw ->
-                                            FourwMiniCard(
-                                                summary = fourw.summary ?: "(no summary)",
-                                                thumb = fourw.screenshotThumb,
-                                                onThumbClick = {
-                                                    previewImage =
-                                                        fourw.screenshotFull ?: fourw.screenshotThumb
-                                                },
-                                                onCardClick = {
-                                                    onOpenFourwDetail(fourw.fourwId)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = uiState.sourceLabel,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                            Text(
+                                text = "action=${uiState.action ?: "null"}",
+                                style = MaterialTheme.typography.labelMedium
+                            )
                         }
 
-                        Spacer(Modifier.height(8.dp))
+                        uiState.summary?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+
+                        FilteredSection(uiState.filtered)
                     }
                 }
             }
         }
+    )
+}
+
+@Composable
+fun FilteredSection(
+    filtered: List<String>,
+    initialVisibleCount: Int = 6,
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    val cleaned = remember(filtered) {
+        filtered
+            .map { it.trim() }
+            .filter { it.length >= 3 }
+            .distinct()
     }
 
-    if (previewImage != null) {
-        AlertDialog(
-            onDismissRequest = { previewImage = null },
-            confirmButton = {
-                TextButton(onClick = { previewImage = null }) {
-                    Text("Close")
-                }
-            },
-            text = {
-                Image(
-                    bitmap = previewImage!!,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(9f / 16f)
-                        .clip(RoundedCornerShape(14.dp))
-                )
-            }
+    if (cleaned.isEmpty()) {
+        Text("No filtered content")
+        return
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = "Filtered",
+            style = MaterialTheme.typography.titleSmall
         )
+
+        val visible = if (expanded) cleaned else cleaned.take(initialVisibleCount)
+
+        visible.forEach { line ->
+            Text(
+                text = "• $line",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        if (cleaned.size > initialVisibleCount) {
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "Show less" else "Show more (${cleaned.size})")
+            }
+        }
     }
 }
