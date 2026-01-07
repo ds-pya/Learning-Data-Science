@@ -1,130 +1,152 @@
-// Stateless UI-only composables (no loading/DB logic here)
-
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-
 @Composable
-fun StmSummaryCard(
-    summary: String,
-    isExpanded: Boolean,
-    onClick: () -> Unit,
+fun StmTimelineCard(
+    loadStms: suspend () -> List<StmCardUi>,
+    loadFourwsForStm: suspend (Long) -> List<FourwCardUi>,
+    onOpenFourwDetail: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Card(
-        onClick = onClick,
-        modifier = modifier,
-        colors = CardDefaults.cardColors(
-            containerColor = if (isExpanded) MaterialTheme.colorScheme.surfaceVariant
-            else MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = summary.ifBlank { "(no summary)" },
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = if (isExpanded) 4 else 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = if (isExpanded) "▲" else "▼",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold
-            )
+    val scope = rememberCoroutineScope()
+
+    var loading by remember { mutableStateOf(false) }
+    var stmItems by remember { mutableStateOf<List<StmCardUi>>(emptyList()) }
+    var expandedStmId by rememberSaveable { mutableStateOf<Long?>(null) }
+
+    val fourwCache = remember { mutableStateMapOf<Long, List<FourwCardUi>>() }
+    val fourwLoading = remember { mutableStateMapOf<Long, Boolean>() }
+
+    var previewImage by remember { mutableStateOf<ImageBitmap?>(null) }
+
+    fun refresh() {
+        if (loading) return
+        loading = true
+        scope.launch {
+            try {
+                stmItems = loadStms()
+                expandedStmId = null
+                fourwCache.clear()
+                fourwLoading.clear()
+            } finally {
+                loading = false
+            }
         }
     }
-}
 
-@Composable
-fun FourwLoadingBlock(
-    modifier: Modifier = Modifier,
-    label: String = "Loading 4W…",
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(start = 6.dp, top = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        CircularProgressIndicator(
-            modifier = Modifier.size(18.dp),
-            strokeWidth = 2.dp
-        )
-        Spacer(Modifier.width(10.dp))
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+    fun ensureFourw(stmId: Long) {
+        if (fourwCache.containsKey(stmId)) return
+        if (fourwLoading[stmId] == true) return
+        fourwLoading[stmId] = true
+        scope.launch {
+            try {
+                fourwCache[stmId] = loadFourwsForStm(stmId)
+            } finally {
+                fourwLoading[stmId] = false
+            }
+        }
     }
-}
 
-@Composable
-fun FourwMiniCard(
-    summary: String,
-    thumb: ImageBitmap?,
-    onThumbClick: () -> Unit,
-    onCardClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Card(
-        onClick = onCardClick,
-        modifier = modifier
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable(onClick = onThumbClick),
-                contentAlignment = Alignment.Center
+    LaunchedEffect(Unit) { refresh() }
+
+    Card(modifier = modifier) {
+        Column(Modifier.padding(16.dp)) {
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (thumb != null) {
-                    Image(
-                        bitmap = thumb,
-                        contentDescription = "screenshot_thumb",
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Text(
-                        text = "IMG",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.Gray
-                    )
+                Text(
+                    "STM Timeline",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = { refresh() }, enabled = !loading) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null)
                 }
             }
 
-            Spacer(Modifier.width(12.dp))
+            if (loading) {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
 
-            Text(
-                text = summary.ifBlank { "(no summary)" },
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
+            Spacer(Modifier.height(12.dp))
+
+            if (!loading && stmItems.isEmpty()) {
+                Text("No STM in last 24h.")
+                return@Column
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                stmItems.forEach { stm ->
+                    val isExpanded = expandedStmId == stm.stmId
+
+                    StmSummaryCard(
+                        summary = stm.summary ?: "(no summary)",
+                        isExpanded = isExpanded,
+                        onClick = {
+                            expandedStmId = if (isExpanded) null else stm.stmId
+                            if (!isExpanded) ensureFourw(stm.stmId)
+                        }
+                    )
+
+                    if (isExpanded) {
+                        Spacer(Modifier.height(6.dp))
+
+                        when {
+                            fourwLoading[stm.stmId] == true -> {
+                                FourwLoadingBlock()
+                            }
+                            else -> {
+                                val rows = fourwCache[stm.stmId].orEmpty()
+                                if (rows.isEmpty()) {
+                                    Text(
+                                        "No 4W linked.",
+                                        modifier = Modifier.padding(start = 6.dp)
+                                    )
+                                } else {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        rows.forEach { fourw ->
+                                            FourwMiniCard(
+                                                summary = fourw.summary ?: "(no summary)",
+                                                thumb = fourw.screenshotThumb,
+                                                onThumbClick = {
+                                                    previewImage =
+                                                        fourw.screenshotFull ?: fourw.screenshotThumb
+                                                },
+                                                onCardClick = {
+                                                    onOpenFourwDetail(fourw.fourwId)
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                    }
+                }
+            }
         }
     }
+
+    if (previewImage != null) {
+        AlertDialog(
+            onDismissRequest = { previewImage = null },
+            confirmButton = {
+                TextButton(onClick = { previewImage = null }) {
+                    Text("Close")
+                }
+            },
+            text = {
+                Image(
+                    bitmap = previewImage!!,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(9f / 16f)
+                        .clip(RoundedCornerShape(14.dp))
+                )
+            }
+        )
+    }
 }
-```0
