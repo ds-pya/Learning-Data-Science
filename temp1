@@ -1,96 +1,55 @@
-@Composable
-fun FourwDetailDialog(
-    fourwId: Long,
-    onDismiss: () -> Unit,
-    viewModel: FourwDetailViewModel = hiltViewModel(),
-) {
-    val uiState by viewModel.loadFourwDetail(fourwId).collectAsStateWithLifecycle()
+data class FourwDetailUi(
+    val loading: Boolean = true,
+    val error: String? = null,
+    val packageName: String? = null,
+    val sourceLabel: String = "N/A",   // "VLM" or "LLM"
+    val action: String? = null,
+    val filtered: List<String> = emptyList(),
+    val summary: String? = null,       // optional
+)
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
-        },
-        title = {
-            Text(uiState.packageName ?: "Unknown")
-        },
-        text = {
-            when {
-                uiState.loading -> {
-                    CircularProgressIndicator()
-                }
-                uiState.error != null -> {
-                    Text(uiState.error!!)
-                }
-                else -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+fun loadFourwDetailUi(fourwId: Long): Flow<FourwDetailUi> = flow {
+    emit(FourwDetailUi(loading = true))
 
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = uiState.sourceLabel,
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                            Text(
-                                text = "action=${uiState.action ?: "null"}",
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                        }
+    val row = fourwDao.selectById(fourwId)
+    val pkg = row.packageName
 
-                        uiState.summary?.let {
-                            Text(
-                                text = it,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
+    val jsonStr = row.vlmJson ?: row.llmJson
+    val source = if (row.vlmJson != null) "VLM" else "LLM"
 
-                        FilteredSection(uiState.filtered)
-                    }
-                }
-            }
-        }
-    )
-}
+    val parsed = parseActionFiltered(jsonStr)
 
-@Composable
-fun FilteredSection(
-    filtered: List<String>,
-    initialVisibleCount: Int = 6,
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    val cleaned = remember(filtered) {
-        filtered
-            .map { it.trim() }
-            .filter { it.length >= 3 }
-            .distinct()
-    }
-
-    if (cleaned.isEmpty()) {
-        Text("No filtered content")
-        return
-    }
-
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            text = "Filtered",
-            style = MaterialTheme.typography.titleSmall
+    emit(
+        FourwDetailUi(
+            loading = false,
+            packageName = pkg,
+            sourceLabel = source,
+            action = parsed.first,
+            filtered = parsed.second,
+            summary = row.summary
         )
+    )
+}.catch { t ->
+    emit(FourwDetailUi(loading = false, error = t.message ?: "load failed"))
+}.flowOn(Dispatchers.IO)
 
-        val visible = if (expanded) cleaned else cleaned.take(initialVisibleCount)
-
-        visible.forEach { line ->
-            Text(
-                text = "• $line",
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-
-        if (cleaned.size > initialVisibleCount) {
-            TextButton(onClick = { expanded = !expanded }) {
-                Text(if (expanded) "Show less" else "Show more (${cleaned.size})")
+private fun parseActionFiltered(jsonStr: String?): Pair<String?, List<String>> {
+    if (jsonStr.isNullOrBlank()) return null to emptyList()
+    return try {
+        val obj = JSONObject(jsonStr)
+        val action = obj.optString("action").takeIf { it.isNotBlank() }
+        val arr = obj.optJSONArray("filtered")
+        val filtered = buildList {
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val s = arr.optString(i).trim()
+                    if (s.isNotEmpty()) add(s)
+                }
             }
         }
+        action to filtered
+    } catch (_: Throwable) {
+        null to emptyList()
     }
 }
+```0
