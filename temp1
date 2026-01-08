@@ -1,22 +1,10 @@
-private fun showCalendarSuggestionNotification(summary: String) {
-    val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+class CalHintActionReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val choice = intent.getStringExtra("choice") ?: "unknown"
+        val summary = intent.getStringExtra("summary") ?: ""
+        android.util.Log.i("ContextLens", "calendar_hint_action: choice=$choice summary=${summary.take(80)}")
 
-    if (mgr.getNotificationChannel("contextlens") == null) {
-        mgr.createNotificationChannel(
-            NotificationChannel("contextlens", "ContextLens", NotificationManager.IMPORTANCE_DEFAULT)
-        )
+        val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        mgr.cancel(2001)
     }
-
-    val title = "일정/약속으로 보이는 활동 감지"
-    val body = "“${summary.take(60)}”\n캘린더나 리마인더에 저장할까요?"
-
-    val n = Notification.Builder(context, "contextlens")
-        .setSmallIcon(android.R.drawable.ic_dialog_info)
-        .setContentTitle(title)
-        .setContentText(body)
-        .setStyle(Notification.BigTextStyle().bigText(body))
-        .setAutoCancel(true)
-        .build()
-
-    mgr.notify(2001, n)
 }
