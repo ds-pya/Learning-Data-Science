@@ -1,23 +1,126 @@
-class DismissNotificationReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        val id = intent.getIntExtra("nid", 2001)
+interface SuggestionManager {
+    fun start()
+    fun stop()
+    fun onStmSummary(summary: String?)
+    fun onBlankInputTrigger(packageName: String)
+}
+
+class SuggestionManager @AssistedInject constructor(
+    @Assisted private val service: AccessibilityService,
+    private val stmDao: ShortTermMemoryDao,
+    private val llmClient: TextLlmClient,
+) : SuggestionManager {
+
+    private val context = service.applicationContext
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var running = false
+
+    private val calKeywords = listOf("일정", "스케쥴", "스케줄", "약속")
+    private var lastCalHintAtMs = 0L
+    private val calHintCooldownMs = 3 * 60 * 1000L
+
+    private val lastSuggestAtByPkg = mutableMapOf<String, Long>()
+    private val suggestCooldownMs = 60_000L
+
+    private val overlay = KeywordOverlayPresenter(context)
+
+    override fun start() {
+        if (running) return
+        running = true
+        overlay.start()
+    }
+
+    override fun stop() {
+        if (!running) return
+        running = false
+        overlay.stop()
+        scope.coroutineContext.cancelChildren()
+    }
+
+    override fun onStmSummary(summary: String?) {
+        if (!running) return
+        val s = summary?.trim().orEmpty()
+        if (s.isEmpty()) return
+        if (!calKeywords.any { s.contains(it) }) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastCalHintAtMs < calHintCooldownMs) return
+        lastCalHintAtMs = now
+
+        showCalendarSuggestionNotification(s)
+    }
+
+    override fun onBlankInputTrigger(packageName: String) {
+        if (!running) return
+        val now = System.currentTimeMillis()
+        val last = lastSuggestAtByPkg[packageName] ?: 0L
+        if (now - last < suggestCooldownMs) return
+        lastSuggestAtByPkg[packageName] = now
+
+        scope.launch {
+            val stm = stmDao.listRecentForSuggestion(limit = 50)
+            val keywords = runCatching {
+                val inputText = buildSuggestionInput(stm, packageName)
+                llmClient.suggestKeywords(inputText)
+            }.getOrNull().orEmpty()
+
+            if (keywords.isNotEmpty()) {
+                overlay.show(packageName, keywords.take(5))
+            }
+        }
+    }
+
+    private fun buildSuggestionInput(stms: List<StmSuggestionDto>, packageName: String): String {
+        val b = StringBuilder()
+        b.appendLine("package=$packageName")
+        b.appendLine("recent_stm:")
+        stms.forEach { s ->
+            b.appendLine("[stm_id=${s.stmId}] head=${s.headSummary} summary=${s.summary}")
+        }
+        return b.toString()
+    }
+
+    private fun showCalendarSuggestionNotification(summary: String) {
         val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        mgr.cancel(id)
+        if (mgr.getNotificationChannel("contextlens_hint") == null) {
+            mgr.createNotificationChannel(
+                NotificationChannel(
+                    "contextlens_hint",
+                    "ContextLens Hints",
+                    NotificationManager.IMPORTANCE_DEFAULT
+                )
+            )
+        }
+
+        fun noopPi(req: Int): PendingIntent {
+            val i = Intent("contextlens.NOOP_$req").setPackage(context.packageName)
+            return PendingIntent.getActivity(
+                context,
+                req,
+                i,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        val body = "“${summary.take(60)}”\n캘린더/리마인더로 저장할까요?"
+
+        val n = Notification.Builder(context, "contextlens_hint")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("일정/약속 감지")
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
+            .setAutoCancel(true)
+            .addAction(Notification.Action.Builder(null, "캘린더", noopPi(1)).build())
+            .addAction(Notification.Action.Builder(null, "리마인더", noopPi(2)).build())
+            .addAction(Notification.Action.Builder(null, "무시하기", noopPi(3)).build())
+            .build()
+
+        mgr.notify(2001, n)
+    }
+
+    @AssistedFactory
+    interface Factory {
+        fun create(service: AccessibilityService): SuggestionManager
     }
 }
-
-private fun dismissPi(req: Int): PendingIntent {
-    val i = Intent(context, DismissNotificationReceiver::class.java)
-        .putExtra("nid", 2001)
-    return PendingIntent.getBroadcast(
-        context,
-        req,
-        i,
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-    )
-}
-
-.addAction(Notification.Action.Builder(null, "캘린더", dismissPi(1)).build())
-.addAction(Notification.Action.Builder(null, "리마인더", dismissPi(2)).build())
-.addAction(Notification.Action.Builder(null, "무시하기", dismissPi(3)).build())
-.setAutoCancel(true)
+```0
