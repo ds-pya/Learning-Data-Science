@@ -1,67 +1,22 @@
-class BitmapLoaderImpl(
-    private val appContext: Context
-) : BitmapLoader {
+private fun showCalendarSuggestionNotification(summary: String) {
+    val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-    override suspend fun loadThumb(uri: String?): ImageBitmap? =
-        decode(uri, maxWidth = 360, maxHeight = 640)
-
-    override suspend fun loadFull(uri: String?): ImageBitmap? =
-        decode(uri, maxWidth = 1080, maxHeight = 1920)
-
-    private suspend fun decode(uri: String?, maxWidth: Int, maxHeight: Int): ImageBitmap? {
-        if (uri.isNullOrBlank()) return null
-        return withContext(Dispatchers.IO) {
-            runCatching {
-                val u = Uri.parse(uri)
-                val resolver = appContext.contentResolver
-
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                openInputStream(u, resolver).use { input ->
-                    if (input == null) return@runCatching null
-                    BitmapFactory.decodeStream(input, null, bounds)
-                }
-
-                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
-
-                val sample = calcInSampleSize(bounds.outWidth, bounds.outHeight, maxWidth, maxHeight)
-
-                val opts = BitmapFactory.Options().apply {
-                    inJustDecodeBounds = false
-                    inSampleSize = sample
-                    inPreferredConfig = Bitmap.Config.RGB_565
-                    inDither = true
-                }
-
-                val bmp = openInputStream(u, resolver).use { input ->
-                    if (input == null) return@runCatching null
-                    BitmapFactory.decodeStream(input, null, opts)
-                } ?: return@runCatching null
-
-                bmp.asImageBitmap()
-            }.getOrNull()
-        }
+    if (mgr.getNotificationChannel("contextlens") == null) {
+        mgr.createNotificationChannel(
+            NotificationChannel("contextlens", "ContextLens", NotificationManager.IMPORTANCE_DEFAULT)
+        )
     }
 
-    private fun openInputStream(u: Uri, resolver: ContentResolver): InputStream? {
-        return when (u.scheme) {
-            "content", "file" -> resolver.openInputStream(u)
-            null -> FileInputStream(u.toString())
-            else -> FileInputStream(u.toString())
-        }
-    }
+    val title = "일정/약속으로 보이는 활동 감지"
+    val body = "“${summary.take(60)}”\n캘린더나 리마인더에 저장할까요?"
 
-    private fun calcInSampleSize(
-        srcW: Int,
-        srcH: Int,
-        reqW: Int,
-        reqH: Int
-    ): Int {
-        var inSample = 1
-        var halfW = srcW / 2
-        var halfH = srcH / 2
-        while (halfW / inSample >= reqW && halfH / inSample >= reqH) {
-            inSample *= 2
-        }
-        return inSample.coerceAtLeast(1)
-    }
+    val n = Notification.Builder(context, "contextlens")
+        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setContentTitle(title)
+        .setContentText(body)
+        .setStyle(Notification.BigTextStyle().bigText(body))
+        .setAutoCancel(true)
+        .build()
+
+    mgr.notify(2001, n)
 }
