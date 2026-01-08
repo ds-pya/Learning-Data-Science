@@ -1,35 +1,23 @@
-private fun showCalendarSuggestionNotification(summary: String) {
-    val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    if (mgr.getNotificationChannel("contextlens") == null) {
-        mgr.createNotificationChannel(
-            NotificationChannel("contextlens", "ContextLens", NotificationManager.IMPORTANCE_DEFAULT)
-        )
+class DismissNotificationReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val id = intent.getIntExtra("nid", 2001)
+        val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        mgr.cancel(id)
     }
-
-    fun actionPi(choice: String, req: Int): PendingIntent {
-        val i = Intent(context, CalHintActionReceiver::class.java)
-            .putExtra("choice", choice)
-            .putExtra("summary", summary)
-        return PendingIntent.getBroadcast(
-            context,
-            req,
-            i,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
-
-    val body = "“${summary.take(60)}”\n저장 위치를 선택하세요."
-
-    val n = Notification.Builder(context, "contextlens")
-        .setSmallIcon(android.R.drawable.ic_dialog_info)
-        .setContentTitle("일정/약속으로 보이는 활동 감지")
-        .setContentText(body)
-        .setStyle(Notification.BigTextStyle().bigText(body))
-        .setAutoCancel(true)
-        .addAction(Notification.Action.Builder(null, "캘린더", actionPi("calendar", 1)).build())
-        .addAction(Notification.Action.Builder(null, "리마인더", actionPi("reminder", 2)).build())
-        .addAction(Notification.Action.Builder(null, "무시하기", actionPi("ignore", 3)).build())
-        .build()
-
-    mgr.notify(2001, n)
 }
+
+private fun dismissPi(req: Int): PendingIntent {
+    val i = Intent(context, DismissNotificationReceiver::class.java)
+        .putExtra("nid", 2001)
+    return PendingIntent.getBroadcast(
+        context,
+        req,
+        i,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+}
+
+.addAction(Notification.Action.Builder(null, "캘린더", dismissPi(1)).build())
+.addAction(Notification.Action.Builder(null, "리마인더", dismissPi(2)).build())
+.addAction(Notification.Action.Builder(null, "무시하기", dismissPi(3)).build())
+.setAutoCancel(true)
