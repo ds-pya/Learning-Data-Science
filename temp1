@@ -1,88 +1,103 @@
-data class StmFourwJoinRow(
-    val stmId: Long,
-    val stmCreatedAtMs: Long,
-    val stmSummary: String?,
-    val fourwId: Long?,
-    val llmJson: String?,
-    val vlmJson: String?,
-)
+fun buildKeywordSuggestInputText(
+    stms: List<StmSuggestionDto>,
+    packageName: String,
+    stmLimit: Int = 5,
+    fourwPerStmLimit: Int = 5,
+    filteredPerFourwLimit: Int = 3,
+    maxChars: Int = 6000
+): String {
+    val b = StringBuilder()
+    b.appendLine("TARGET_APP: $packageName")
+    b.appendLine("RECENT_STM (latest first):")
 
-data class FourwFilteredDto(
-    val fourwId: Long,
-    val filtered: List<String>,
-)
+    stms.take(stmLimit).forEach { s ->
+        b.appendLine("[stm_id=${s.stmId}] summary=${(s.summary ?: "").take(200)}")
+        s.fourws.take(fourwPerStmLimit).forEach { f ->
+            val picked = f.filtered
+                .asSequence()
+                .map { it.trim() }
+                .filter { it.length >= 2 }
+                .distinct()
+                .take(filteredPerFourwLimit)
+                .toList()
 
-data class StmSuggestionDto(
-    val stmId: Long,
-    val summary: String?,
-    val fourws: List<FourwFilteredDto>,
-)
-
-@Dao
-interface ShortTermMemoryDao {
-
-    @Query(
-        """
-        WITH recent AS (
-            SELECT id, createdAtMs, summary
-            FROM short_term_memory
-            ORDER BY createdAtMs DESC
-            LIMIT :stmLimit
-        )
-        SELECT 
-            recent.id AS stmId,
-            recent.createdAtMs AS stmCreatedAtMs,
-            recent.summary AS stmSummary,
-            f.id AS fourwId,
-            f.llmJson AS llmJson,
-            f.vlmJson AS vlmJson
-        FROM recent
-        LEFT JOIN stm_fourw_link l ON l.stmId = recent.id
-        LEFT JOIN fourw_log f ON f.id = l.fourwId
-        ORDER BY recent.createdAtMs DESC, f.eventTimeMs DESC
-        """
-    )
-    suspend fun listRecentStmFourwRows(stmLimit: Int = 5): List<StmFourwJoinRow>
-
-    suspend fun listRecentStmSuggestions(stmLimit: Int = 5): List<StmSuggestionDto> {
-        val rows = listRecentStmFourwRows(stmLimit)
-
-        val order = ArrayList<Long>(stmLimit)
-        val byStm = LinkedHashMap<Long, MutableList<StmFourwJoinRow>>()
-
-        for (r in rows) {
-            if (!byStm.containsKey(r.stmId)) {
-                byStm[r.stmId] = mutableListOf()
-                order.add(r.stmId)
+            if (picked.isNotEmpty()) {
+                b.appendLine("  - [fourw_id=${f.fourwId}] filtered:")
+                picked.forEach { line -> b.appendLine("      * ${line.take(160)}") }
             }
-            byStm[r.stmId]!!.add(r)
-        }
-
-        return order.map { stmId ->
-            val rs = byStm[stmId].orEmpty()
-            val summary = rs.firstOrNull()?.stmSummary
-            val fourws = rs.mapNotNull { r ->
-                val fid = r.fourwId ?: return@mapNotNull null
-                val filtered = extractFilteredPreferVlm(r.vlmJson, r.llmJson)
-                FourwFilteredDto(fid, filtered)
-            }
-            StmSuggestionDto(stmId, summary, fourws)
         }
     }
+
+    val out = b.toString()
+    return if (out.length <= maxChars) out else out.take(maxChars)
 }
 
-private fun extractFilteredPreferVlm(vlmJson: String?, llmJson: String?): List<String> {
-    val json = vlmJson ?: llmJson ?: return emptyList()
-    return try {
-        val obj = org.json.JSONObject(json)
-        val arr = obj.optJSONArray("filtered") ?: return emptyList()
-        buildList {
-            for (i in 0 until arr.length()) {
-                val s = arr.optString(i).trim()
-                if (s.isNotEmpty()) add(s)
-            }
-        }
-    } catch (_: Throwable) {
-        emptyList()
+fun buildKeywordSuggestPrompt(packageName: String): String {
+    return """
+You are generating search/query keyword suggestions for a user who is about to type in an input box.
+The target app package is: $packageName.
+
+Given recent short-term memory (STM) summaries and filtered snippets from recent screens, return 5 keyword suggestions ranked from best to worst.
+
+Rules:
+- Suggestions must be short Korean phrases (2~12 chars typical), not full sentences.
+- Avoid duplicates and near-duplicates.
+- Do NOT include numbering or extra text.
+- Output MUST be a JSON array of strings only. Example: ["키워드1","키워드2","키워드3","키워드4","키워드5"]
+If you cannot infer, output an empty JSON array: []
+""".trim()
+}
+
+fun refineKeywordSuggestOutput(raw: String?): List<String>? {
+    val s = raw?.trim().orEmpty()
+    if (s.isEmpty()) return null
+
+    fun clean(list: List<String>): List<String>? {
+        val out = list.asSequence()
+            .map { it.trim().trim('"') }
+            .map { it.replace("\u0000", "") }
+            .filter { it.isNotBlank() }
+            .filter { it.length in 1..40 }
+            .distinct()
+            .take(5)
+            .toList()
+        return out.ifEmpty { null }
     }
+
+    fun tryJsonArray(str: String): List<String>? {
+        return try {
+            val arr = org.json.JSONArray(str)
+            val list = buildList {
+                for (i in 0 until arr.length()) add(arr.optString(i))
+            }
+            clean(list)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    fun tryJsonObject(str: String): List<String>? {
+        return try {
+            val obj = org.json.JSONObject(str)
+            val arr = obj.optJSONArray("keywords") ?: obj.optJSONArray("suggestions") ?: return null
+            val list = buildList {
+                for (i in 0 until arr.length()) add(arr.optString(i))
+            }
+            clean(list)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    val jsonArray = tryJsonArray(s)
+    if (jsonArray != null) return jsonArray
+
+    val jsonObject = tryJsonObject(s)
+    if (jsonObject != null) return jsonObject
+
+    val fallback = s
+        .lines()
+        .map { it.trim().trimStart('-', '*', '•').trim() }
+        .filter { it.isNotBlank() }
+    return clean(fallback)
 }
