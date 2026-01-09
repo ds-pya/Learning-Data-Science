@@ -1,172 +1,25 @@
-class KeywordOverlayPresenter(
-    private val context: Context
-) {
-    private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+당신은 사용자가 지금 입력창에 무언가를 입력하려고 할 때,
+가장 가능성이 높은 검색어/입력 키워드를 추천하는 시스템입니다.
 
-    private var attached = false
-    private var root: FrameLayout? = null
-    private var chipRow: LinearLayout? = null
-    private var titleView: TextView? = null
-    private var closeBtn: TextView? = null
+아래에는 사용자의 최근 활동 요약(STM)과,
+각 활동 화면에서 의미있게 추출된 문장 조각들이 주어집니다.
+형식은 다음과 같습니다:
 
-    private var hideRunnable: Runnable? = null
+recent stm (latest first):
+[stm 123] summary=...
+    * 문장1
+    * 문장2
+    ...
 
-    fun start() {
-        if (attached) return
-        attached = true
-        ensureView()
-    }
+이 정보들을 바탕으로,
+사용자가 지금 입력하려는 “대표 키워드” 5개를 중요도 순으로 추측하십시오.
 
-    fun stop() {
-        if (!attached) return
-        attached = false
-        hideRunnable?.let { mainHandler.removeCallbacks(it) }
-        hideRunnable = null
-        root?.let { r ->
-            runCatching { wm.removeView(r) }
-        }
-        root = null
-        chipRow = null
-        titleView = null
-        closeBtn = null
-    }
+규칙:
+- 출력은 반드시 JSON 배열 형식이어야 합니다.
+- 각 항목은 짧은 한국어 키워드(보통 2~12자)여야 합니다.
+- 문장이나 설명이 아니라 “검색어/입력어” 형태여야 합니다.
+- 중복되거나 의미가 거의 같은 것은 제거하십시오.
+- 불확실할 경우에도 가능한 최선의 추측을 하되, 정말 아무 것도 추론할 수 없으면 [] 를 출력하십시오.
 
-    fun show(packageName: String, keywords: List<String>, autoHideMs: Long = 10_000L) {
-        if (!attached) return
-        if (keywords.isEmpty()) return
-
-        mainHandler.post {
-            ensureView()
-            titleView?.text = "추천 키워드 (${keywords.size})"
-            rebuildChips(keywords)
-
-            root?.let { r ->
-                if (r.parent == null) {
-                    runCatching { wm.addView(r, buildLayoutParams()) }
-                }
-            }
-
-            hideRunnable?.let { mainHandler.removeCallbacks(it) }
-            hideRunnable = Runnable { dismiss() }.also { mainHandler.postDelayed(it, autoHideMs) }
-        }
-    }
-
-    fun dismiss() {
-        mainHandler.post {
-            hideRunnable?.let { mainHandler.removeCallbacks(it) }
-            hideRunnable = null
-            root?.let { r ->
-                if (r.parent != null) runCatching { wm.removeView(r) }
-            }
-        }
-    }
-
-    private fun ensureView() {
-        if (root != null) return
-
-        val r = FrameLayout(context)
-        r.setPadding(dp(12), dp(10), dp(12), dp(10))
-        r.setBackgroundColor(0xEE1F1F1F.toInt())
-
-        val col = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
-        val header = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        val t = TextView(context).apply {
-            setTextColor(0xFFFFFFFF.toInt())
-            textSize = 14f
-            text = "추천 키워드"
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        val x = TextView(context).apply {
-            setTextColor(0xFFFFFFFF.toInt())
-            textSize = 16f
-            text = "✕"
-            setPadding(dp(10), dp(4), dp(6), dp(4))
-            setOnClickListener { dismiss() }
-        }
-
-        header.addView(t)
-        header.addView(x)
-
-        val sc = HorizontalScrollView(context).apply {
-            isHorizontalScrollBarEnabled = false
-            overScrollMode = View.OVER_SCROLL_NEVER
-        }
-
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        sc.addView(row)
-
-        col.addView(header)
-        col.addView(space(dp(8)))
-        col.addView(sc)
-
-        r.addView(col)
-
-        root = r
-        chipRow = row
-        titleView = t
-        closeBtn = x
-    }
-
-    private fun rebuildChips(keywords: List<String>) {
-        val row = chipRow ?: return
-        row.removeAllViews()
-
-        keywords.take(5).forEachIndexed { idx, kw ->
-            val chip = TextView(context).apply {
-                text = kw
-                setTextColor(0xFF111111.toInt())
-                textSize = 13f
-                setPadding(dp(12), dp(8), dp(12), dp(8))
-                setBackgroundColor(0xFFFFFFFF.toInt())
-                setOnClickListener {
-                    dismiss() // PoC: click = dismiss only
-                }
-            }
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            if (idx > 0) lp.leftMargin = dp(8)
-            row.addView(chip, lp)
-        }
-    }
-
-    private fun buildLayoutParams(): WindowManager.LayoutParams {
-        return WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            android.graphics.PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP
-            x = 0
-            y = dp(60)
-        }
-    }
-
-    private fun space(h: Int): View = View(context).apply {
-        layoutParams = LinearLayout.LayoutParams(1, h)
-    }
-
-    private fun dp(v: Int): Int {
-        val d = context.resources.displayMetrics.density
-        return (v * d + 0.5f).toInt()
-    }
-}
-```0
+출력 예:
+["서울 날씨","비 오는 날 옷","우산 추천","출근 교통","택시 요금"]
