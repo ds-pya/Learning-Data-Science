@@ -1,126 +1,88 @@
-interface SuggestionManager {
-    fun start()
-    fun stop()
-    fun onStmSummary(summary: String?)
-    fun onBlankInputTrigger(packageName: String)
+data class StmFourwJoinRow(
+    val stmId: Long,
+    val stmCreatedAtMs: Long,
+    val stmSummary: String?,
+    val fourwId: Long?,
+    val llmJson: String?,
+    val vlmJson: String?,
+)
+
+data class FourwFilteredDto(
+    val fourwId: Long,
+    val filtered: List<String>,
+)
+
+data class StmSuggestionDto(
+    val stmId: Long,
+    val summary: String?,
+    val fourws: List<FourwFilteredDto>,
+)
+
+@Dao
+interface ShortTermMemoryDao {
+
+    @Query(
+        """
+        WITH recent AS (
+            SELECT id, createdAtMs, summary
+            FROM short_term_memory
+            ORDER BY createdAtMs DESC
+            LIMIT :stmLimit
+        )
+        SELECT 
+            recent.id AS stmId,
+            recent.createdAtMs AS stmCreatedAtMs,
+            recent.summary AS stmSummary,
+            f.id AS fourwId,
+            f.llmJson AS llmJson,
+            f.vlmJson AS vlmJson
+        FROM recent
+        LEFT JOIN stm_fourw_link l ON l.stmId = recent.id
+        LEFT JOIN fourw_log f ON f.id = l.fourwId
+        ORDER BY recent.createdAtMs DESC, f.eventTimeMs DESC
+        """
+    )
+    suspend fun listRecentStmFourwRows(stmLimit: Int = 5): List<StmFourwJoinRow>
+
+    suspend fun listRecentStmSuggestions(stmLimit: Int = 5): List<StmSuggestionDto> {
+        val rows = listRecentStmFourwRows(stmLimit)
+
+        val order = ArrayList<Long>(stmLimit)
+        val byStm = LinkedHashMap<Long, MutableList<StmFourwJoinRow>>()
+
+        for (r in rows) {
+            if (!byStm.containsKey(r.stmId)) {
+                byStm[r.stmId] = mutableListOf()
+                order.add(r.stmId)
+            }
+            byStm[r.stmId]!!.add(r)
+        }
+
+        return order.map { stmId ->
+            val rs = byStm[stmId].orEmpty()
+            val summary = rs.firstOrNull()?.stmSummary
+            val fourws = rs.mapNotNull { r ->
+                val fid = r.fourwId ?: return@mapNotNull null
+                val filtered = extractFilteredPreferVlm(r.vlmJson, r.llmJson)
+                FourwFilteredDto(fid, filtered)
+            }
+            StmSuggestionDto(stmId, summary, fourws)
+        }
+    }
 }
 
-class SuggestionManager @AssistedInject constructor(
-    @Assisted private val service: AccessibilityService,
-    private val stmDao: ShortTermMemoryDao,
-    private val llmClient: TextLlmClient,
-) : SuggestionManager {
-
-    private val context = service.applicationContext
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var running = false
-
-    private val calKeywords = listOf("일정", "스케쥴", "스케줄", "약속")
-    private var lastCalHintAtMs = 0L
-    private val calHintCooldownMs = 3 * 60 * 1000L
-
-    private val lastSuggestAtByPkg = mutableMapOf<String, Long>()
-    private val suggestCooldownMs = 60_000L
-
-    private val overlay = KeywordOverlayPresenter(context)
-
-    override fun start() {
-        if (running) return
-        running = true
-        overlay.start()
-    }
-
-    override fun stop() {
-        if (!running) return
-        running = false
-        overlay.stop()
-        scope.coroutineContext.cancelChildren()
-    }
-
-    override fun onStmSummary(summary: String?) {
-        if (!running) return
-        val s = summary?.trim().orEmpty()
-        if (s.isEmpty()) return
-        if (!calKeywords.any { s.contains(it) }) return
-
-        val now = System.currentTimeMillis()
-        if (now - lastCalHintAtMs < calHintCooldownMs) return
-        lastCalHintAtMs = now
-
-        showCalendarSuggestionNotification(s)
-    }
-
-    override fun onBlankInputTrigger(packageName: String) {
-        if (!running) return
-        val now = System.currentTimeMillis()
-        val last = lastSuggestAtByPkg[packageName] ?: 0L
-        if (now - last < suggestCooldownMs) return
-        lastSuggestAtByPkg[packageName] = now
-
-        scope.launch {
-            val stm = stmDao.listRecentForSuggestion(limit = 50)
-            val keywords = runCatching {
-                val inputText = buildSuggestionInput(stm, packageName)
-                llmClient.suggestKeywords(inputText)
-            }.getOrNull().orEmpty()
-
-            if (keywords.isNotEmpty()) {
-                overlay.show(packageName, keywords.take(5))
+private fun extractFilteredPreferVlm(vlmJson: String?, llmJson: String?): List<String> {
+    val json = vlmJson ?: llmJson ?: return emptyList()
+    return try {
+        val obj = org.json.JSONObject(json)
+        val arr = obj.optJSONArray("filtered") ?: return emptyList()
+        buildList {
+            for (i in 0 until arr.length()) {
+                val s = arr.optString(i).trim()
+                if (s.isNotEmpty()) add(s)
             }
         }
-    }
-
-    private fun buildSuggestionInput(stms: List<StmSuggestionDto>, packageName: String): String {
-        val b = StringBuilder()
-        b.appendLine("package=$packageName")
-        b.appendLine("recent_stm:")
-        stms.forEach { s ->
-            b.appendLine("[stm_id=${s.stmId}] head=${s.headSummary} summary=${s.summary}")
-        }
-        return b.toString()
-    }
-
-    private fun showCalendarSuggestionNotification(summary: String) {
-        val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (mgr.getNotificationChannel("contextlens_hint") == null) {
-            mgr.createNotificationChannel(
-                NotificationChannel(
-                    "contextlens_hint",
-                    "ContextLens Hints",
-                    NotificationManager.IMPORTANCE_DEFAULT
-                )
-            )
-        }
-
-        fun noopPi(req: Int): PendingIntent {
-            val i = Intent("contextlens.NOOP_$req").setPackage(context.packageName)
-            return PendingIntent.getActivity(
-                context,
-                req,
-                i,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-        }
-
-        val body = "“${summary.take(60)}”\n캘린더/리마인더로 저장할까요?"
-
-        val n = Notification.Builder(context, "contextlens_hint")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("일정/약속 감지")
-            .setContentText(body)
-            .setStyle(Notification.BigTextStyle().bigText(body))
-            .setAutoCancel(true)
-            .addAction(Notification.Action.Builder(null, "캘린더", noopPi(1)).build())
-            .addAction(Notification.Action.Builder(null, "리마인더", noopPi(2)).build())
-            .addAction(Notification.Action.Builder(null, "무시하기", noopPi(3)).build())
-            .build()
-
-        mgr.notify(2001, n)
-    }
-
-    @AssistedFactory
-    interface Factory {
-        fun create(service: AccessibilityService): SuggestionManager
+    } catch (_: Throwable) {
+        emptyList()
     }
 }
-```0
