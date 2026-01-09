@@ -1,103 +1,172 @@
-fun buildKeywordSuggestInputText(
-    stms: List<StmSuggestionDto>,
-    packageName: String,
-    stmLimit: Int = 5,
-    fourwPerStmLimit: Int = 5,
-    filteredPerFourwLimit: Int = 3,
-    maxChars: Int = 6000
-): String {
-    val b = StringBuilder()
-    b.appendLine("TARGET_APP: $packageName")
-    b.appendLine("RECENT_STM (latest first):")
+class KeywordOverlayPresenter(
+    private val context: Context
+) {
+    private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
-    stms.take(stmLimit).forEach { s ->
-        b.appendLine("[stm_id=${s.stmId}] summary=${(s.summary ?: "").take(200)}")
-        s.fourws.take(fourwPerStmLimit).forEach { f ->
-            val picked = f.filtered
-                .asSequence()
-                .map { it.trim() }
-                .filter { it.length >= 2 }
-                .distinct()
-                .take(filteredPerFourwLimit)
-                .toList()
+    private var attached = false
+    private var root: FrameLayout? = null
+    private var chipRow: LinearLayout? = null
+    private var titleView: TextView? = null
+    private var closeBtn: TextView? = null
 
-            if (picked.isNotEmpty()) {
-                b.appendLine("  - [fourw_id=${f.fourwId}] filtered:")
-                picked.forEach { line -> b.appendLine("      * ${line.take(160)}") }
+    private var hideRunnable: Runnable? = null
+
+    fun start() {
+        if (attached) return
+        attached = true
+        ensureView()
+    }
+
+    fun stop() {
+        if (!attached) return
+        attached = false
+        hideRunnable?.let { mainHandler.removeCallbacks(it) }
+        hideRunnable = null
+        root?.let { r ->
+            runCatching { wm.removeView(r) }
+        }
+        root = null
+        chipRow = null
+        titleView = null
+        closeBtn = null
+    }
+
+    fun show(packageName: String, keywords: List<String>, autoHideMs: Long = 10_000L) {
+        if (!attached) return
+        if (keywords.isEmpty()) return
+
+        mainHandler.post {
+            ensureView()
+            titleView?.text = "추천 키워드 (${keywords.size})"
+            rebuildChips(keywords)
+
+            root?.let { r ->
+                if (r.parent == null) {
+                    runCatching { wm.addView(r, buildLayoutParams()) }
+                }
+            }
+
+            hideRunnable?.let { mainHandler.removeCallbacks(it) }
+            hideRunnable = Runnable { dismiss() }.also { mainHandler.postDelayed(it, autoHideMs) }
+        }
+    }
+
+    fun dismiss() {
+        mainHandler.post {
+            hideRunnable?.let { mainHandler.removeCallbacks(it) }
+            hideRunnable = null
+            root?.let { r ->
+                if (r.parent != null) runCatching { wm.removeView(r) }
             }
         }
     }
 
-    val out = b.toString()
-    return if (out.length <= maxChars) out else out.take(maxChars)
-}
+    private fun ensureView() {
+        if (root != null) return
 
-fun buildKeywordSuggestPrompt(packageName: String): String {
-    return """
-You are generating search/query keyword suggestions for a user who is about to type in an input box.
-The target app package is: $packageName.
+        val r = FrameLayout(context)
+        r.setPadding(dp(12), dp(10), dp(12), dp(10))
+        r.setBackgroundColor(0xEE1F1F1F.toInt())
 
-Given recent short-term memory (STM) summaries and filtered snippets from recent screens, return 5 keyword suggestions ranked from best to worst.
+        val col = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+        }
 
-Rules:
-- Suggestions must be short Korean phrases (2~12 chars typical), not full sentences.
-- Avoid duplicates and near-duplicates.
-- Do NOT include numbering or extra text.
-- Output MUST be a JSON array of strings only. Example: ["키워드1","키워드2","키워드3","키워드4","키워드5"]
-If you cannot infer, output an empty JSON array: []
-""".trim()
-}
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
 
-fun refineKeywordSuggestOutput(raw: String?): List<String>? {
-    val s = raw?.trim().orEmpty()
-    if (s.isEmpty()) return null
+        val t = TextView(context).apply {
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            text = "추천 키워드"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
 
-    fun clean(list: List<String>): List<String>? {
-        val out = list.asSequence()
-            .map { it.trim().trim('"') }
-            .map { it.replace("\u0000", "") }
-            .filter { it.isNotBlank() }
-            .filter { it.length in 1..40 }
-            .distinct()
-            .take(5)
-            .toList()
-        return out.ifEmpty { null }
+        val x = TextView(context).apply {
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 16f
+            text = "✕"
+            setPadding(dp(10), dp(4), dp(6), dp(4))
+            setOnClickListener { dismiss() }
+        }
+
+        header.addView(t)
+        header.addView(x)
+
+        val sc = HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        sc.addView(row)
+
+        col.addView(header)
+        col.addView(space(dp(8)))
+        col.addView(sc)
+
+        r.addView(col)
+
+        root = r
+        chipRow = row
+        titleView = t
+        closeBtn = x
     }
 
-    fun tryJsonArray(str: String): List<String>? {
-        return try {
-            val arr = org.json.JSONArray(str)
-            val list = buildList {
-                for (i in 0 until arr.length()) add(arr.optString(i))
+    private fun rebuildChips(keywords: List<String>) {
+        val row = chipRow ?: return
+        row.removeAllViews()
+
+        keywords.take(5).forEachIndexed { idx, kw ->
+            val chip = TextView(context).apply {
+                text = kw
+                setTextColor(0xFF111111.toInt())
+                textSize = 13f
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                setBackgroundColor(0xFFFFFFFF.toInt())
+                setOnClickListener {
+                    dismiss() // PoC: click = dismiss only
+                }
             }
-            clean(list)
-        } catch (_: Throwable) {
-            null
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            if (idx > 0) lp.leftMargin = dp(8)
+            row.addView(chip, lp)
         }
     }
 
-    fun tryJsonObject(str: String): List<String>? {
-        return try {
-            val obj = org.json.JSONObject(str)
-            val arr = obj.optJSONArray("keywords") ?: obj.optJSONArray("suggestions") ?: return null
-            val list = buildList {
-                for (i in 0 until arr.length()) add(arr.optString(i))
-            }
-            clean(list)
-        } catch (_: Throwable) {
-            null
+    private fun buildLayoutParams(): WindowManager.LayoutParams {
+        return WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            android.graphics.PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP
+            x = 0
+            y = dp(60)
         }
     }
 
-    val jsonArray = tryJsonArray(s)
-    if (jsonArray != null) return jsonArray
+    private fun space(h: Int): View = View(context).apply {
+        layoutParams = LinearLayout.LayoutParams(1, h)
+    }
 
-    val jsonObject = tryJsonObject(s)
-    if (jsonObject != null) return jsonObject
-
-    val fallback = s
-        .lines()
-        .map { it.trim().trimStart('-', '*', '•').trim() }
-        .filter { it.isNotBlank() }
-    return clean(fallback)
+    private fun dp(v: Int): Int {
+        val d = context.resources.displayMetrics.density
+        return (v * d + 0.5f).toInt()
+    }
 }
+```0
