@@ -1,105 +1,166 @@
-data class A11yNodeDTO(
-    val id: Long?,
-    val parentId: Long?,
-    val className: String?,
-    val text: String?,
-    val contentDesc: String?,
-    val viewId: String?,
-    val bounds: Rect,
-    val clickable: Boolean,
-    val enabled: Boolean,
-    val focusable: Boolean,
-    val visible: Boolean,
-    val children: List<Long>
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class A11yDumpDTO(
+    val meta: MetaDTO,
+    val windows: List<WindowDTO>,
+    val nodes: List<NodeDTO>,
 )
 
-fun dumpNodeTree(root: AccessibilityNodeInfo): List<A11yNodeDTO> {
-    val result = mutableListOf<A11yNodeDTO>()
-    var idCounter = 0L
+@Serializable
+data class MetaDTO(
+    val packageName: String,
+    val timestampMs: Long,
+)
 
-    fun traverse(node: AccessibilityNodeInfo?, parentId: Long?) {
-        if (node == null) return
-
-        val myId = idCounter++
-        val bounds = Rect().also { node.getBoundsInScreen(it) }
-
-        val childIds = mutableListOf<Long>()
-
-        val dto = A11yNodeDTO(
-            id = myId,
-            parentId = parentId,
-            className = node.className?.toString(),
-            text = node.text?.toString(),
-            contentDesc = node.contentDescription?.toString(),
-            viewId = node.viewIdResourceName,
-            bounds = bounds,
-            clickable = node.isClickable,
-            enabled = node.isEnabled,
-            focusable = node.isFocusable,
-            visible = node.isVisibleToUser,
-            children = childIds
-        )
-
-        result.add(dto)
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i)
-            val childId = idCounter
-            childIds.add(childId)
-            traverse(child, myId)
-            child?.recycle()
-        }
-    }
-
-    traverse(root, null)
-    return result
-}
-
-data class A11yWindowDTO(
+@Serializable
+data class WindowDTO(
     val id: Int,
     val type: Int,
     val title: String?,
-    val bounds: Rect,
-    val rootNodeId: Long?
+    val bounds: IntArray, // [l,t,r,b]
+    val isActive: Boolean,
+    val isFocused: Boolean,
 )
 
-fun dumpWindows(
-    windows: List<AccessibilityWindowInfo>,
-    nodeDump: Map<AccessibilityNodeInfo, Long>
-): List<A11yWindowDTO> {
-    return windows.map { w ->
-        val bounds = Rect().also { w.getBoundsInScreen(it) }
+@Serializable
+data class NodeDTO(
+    val id: Long,
+    val parentId: Long?,
+    val className: String?,
+    val packageName: String?,
+    val viewId: String?,
+    val text: String?,
+    val contentDesc: String?,
+    val bounds: IntArray, // [l,t,r,b]
+    val childIds: LongArray,
+    val isClickable: Boolean,
+    val isEnabled: Boolean,
+    val isFocusable: Boolean,
+    val isVisibleToUser: Boolean,
+    val isScrollable: Boolean,
+    val isCheckable: Boolean,
+    val isChecked: Boolean,
+    val isSelected: Boolean,
+)
 
-        A11yWindowDTO(
+import android.graphics.Rect
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
+
+fun dumpLossless(
+    windows: List<AccessibilityWindowInfo>,
+    root: AccessibilityNodeInfo,
+    packageName: String,
+    timestampMs: Long = System.currentTimeMillis(),
+): A11yDumpDTO {
+    // Node flatten (preorder)
+    val nodes = ArrayList<NodeDTO>(2048)
+    var idCounter = 1L
+
+    fun rectToArr(r: Rect) = intArrayOf(r.left, r.top, r.right, r.bottom)
+
+    fun traverse(node: AccessibilityNodeInfo?, parentId: Long?) : Long? {
+        if (node == null) return null
+        val myId = idCounter++
+        val bounds = Rect().also { node.getBoundsInScreen(it) }
+
+        // 먼저 children ids 예약
+        val childCount = node.childCount
+        val childIds = LongArray(childCount)
+
+        // 현재 노드 DTO 먼저 넣고, 이후 children 채우기 위해 임시로 0들어감
+        val idx = nodes.size
+        nodes.add(
+            NodeDTO(
+                id = myId,
+                parentId = parentId,
+                className = node.className?.toString(),
+                packageName = node.packageName?.toString(),
+                viewId = node.viewIdResourceName,
+                text = node.text?.toString(),
+                contentDesc = node.contentDescription?.toString(),
+                bounds = rectToArr(bounds),
+                childIds = childIds,
+                isClickable = node.isClickable,
+                isEnabled = node.isEnabled,
+                isFocusable = node.isFocusable,
+                isVisibleToUser = node.isVisibleToUser,
+                isScrollable = node.isScrollable,
+                isCheckable = node.isCheckable,
+                isChecked = node.isChecked,
+                isSelected = node.isSelected,
+            )
+        )
+
+        for (i in 0 until childCount) {
+            val child = node.getChild(i)
+            val childId = traverse(child, myId)
+            if (childId != null) childIds[i] = childId
+            child?.recycle()
+        }
+
+        // childIds가 채워졌으니 nodes[idx] 교체(불변 DTO라서)
+        nodes[idx] = nodes[idx].copy(childIds = childIds)
+        return myId
+    }
+
+    traverse(root, null)
+
+    val windowsDto = windows.map { w ->
+        val b = Rect().also { w.getBoundsInScreen(it) }
+        WindowDTO(
             id = w.id,
             type = w.type,
             title = w.title?.toString(),
-            bounds = bounds,
-            rootNodeId = nodeDump[w.root]
+            bounds = intArrayOf(b.left, b.top, b.right, b.bottom),
+            isActive = w.isActive,
+            isFocused = w.isFocused,
         )
     }
+
+    return A11yDumpDTO(
+        meta = MetaDTO(packageName = packageName, timestampMs = timestampMs),
+        windows = windowsDto,
+        nodes = nodes
+    )
 }
 
 import android.content.ContentValues
 import android.content.Context
 import android.os.Build
-import android.os.Environment
 import android.provider.MediaStore
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-fun saveJsonToDownloads(
+private val dumpJson = Json {
+    prettyPrint = false
+    encodeDefaults = true
+    explicitNulls = true
+}
+
+fun saveDumpJsonToDownloads(
     context: Context,
-    prefix: String,              // "~~~"
-    packageName: String,
-    jsonString: String
+    prefix: String, // "~~~"
+    windows: List<AccessibilityWindowInfo>,
+    root: AccessibilityNodeInfo,
 ): String? {
-    val safePkg = packageName.replace(Regex("""[^a-zA-Z0-9._-]"""), "_")
+    val pkg = root.packageName?.toString() ?: "unknown"
+    val safePkg = pkg.replace(Regex("""[^a-zA-Z0-9._-]"""), "_")
     val ts = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
     val fileName = "${prefix}_${safePkg}_${ts}.json"
 
-    // Android 10+ (Q+): MediaStore Downloads
+    val dump = dumpLossless(
+        windows = windows,
+        root = root,
+        packageName = pkg
+    )
+    val jsonString = dumpJson.encodeToString(dump)
+
+    // Q+ MediaStore Downloads
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, fileName)
@@ -119,10 +180,9 @@ fun saveJsonToDownloads(
         values.put(MediaStore.Downloads.IS_PENDING, 0)
         resolver.update(uri, values, null, null)
 
-        // 반환: 파일 식별 가능한 URI 문자열
-        return uri.toString()
+        return uri.toString() // content://... 형태
     }
 
-    // Android 9 이하 fallback은 아래 섹션 참고
-    return saveJsonToDownloadsLegacy(context, fileName, jsonString)
+    // Android 9 이하: 직접 저장은 권한 이슈가 있어서 여기선 null 반환(원하면 legacy 버전도 붙여드림)
+    return null
 }
