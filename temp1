@@ -1,17 +1,40 @@
-object ScenarioAccess {
-    private const val PREF = "scenario_prefs"
-    private const val KEY_DIR_URI = "scenario_dir_uri"
+import androidx.documentfile.provider.DocumentFile
+import kotlinx.serialization.json.Json
 
-    fun saveScenarioDirUri(context: Context, uri: Uri) {
-        context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_DIR_URI, uri.toString())
-            .apply()
-    }
+object ScenarioReader {
 
-    fun loadScenarioDirUri(context: Context): Uri? {
-        val s = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-            .getString(KEY_DIR_URI, null)
-        return s?.let(Uri::parse)
+    fun readAll(context: Context): List<Frame> {
+        val dirUri = ScenarioAccess.loadScenarioDirUri(context) ?: return emptyList()
+
+        val dir = DocumentFile.fromTreeUri(context, dirUri) ?: return emptyList()
+        if (!dir.isDirectory) return emptyList()
+
+        val metaFile = dir.findFile("metainfo.json") ?: return emptyList()
+
+        val metaJson = context.contentResolver.openInputStream(metaFile.uri)
+            ?.bufferedReader()
+            ?.readText()
+            ?: return emptyList()
+
+        val meta: Map<String, String> = Json.decodeFromString(metaJson)
+
+        return meta.keys
+            .sorted()
+            .mapNotNull { filename ->
+                val pkg = meta[filename] ?: return@mapNotNull null
+                val pngDoc = dir.findFile(filename) ?: return@mapNotNull null
+
+                val bmp = context.contentResolver.openInputStream(pngDoc.uri)?.use { input ->
+                    android.graphics.BitmapFactory.decodeStream(input)
+                } ?: return@mapNotNull null
+
+                Frame(filename = filename, packageName = pkg, bitmap = bmp)
+            }
     }
 }
+
+data class Frame(
+    val filename: String,
+    val packageName: String,
+    val bitmap: android.graphics.Bitmap
+)
