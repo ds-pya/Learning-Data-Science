@@ -1,66 +1,17 @@
-fun loadMetaInfo(context: Context): Map<String, String> {
-    val resolver = context.contentResolver
+object ScenarioAccess {
+    private const val PREF = "scenario_prefs"
+    private const val KEY_DIR_URI = "scenario_dir_uri"
 
-    val uri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
-
-    val cursor = resolver.query(
-        uri,
-        arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME),
-        "${MediaStore.Downloads.RELATIVE_PATH}=? AND ${MediaStore.Downloads.DISPLAY_NAME}=?",
-        arrayOf("Download/scenario/scenario1/", "metainfo.json"),
-        null
-    )
-
-    cursor?.use {
-        if (it.moveToFirst()) {
-            val id = it.getLong(0)
-            val fileUri = ContentUris.withAppendedId(uri, id)
-
-            resolver.openInputStream(fileUri)?.use { input ->
-                val json = input.bufferedReader().readText()
-                return Json.decodeFromString(json)
-            }
-        }
+    fun saveScenarioDirUri(context: Context, uri: Uri) {
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_DIR_URI, uri.toString())
+            .apply()
     }
 
-    return emptyMap()
-}
-
-fun loadBitmap(context: Context, filename: String): Bitmap? {
-    val resolver = context.contentResolver
-
-    val cursor = resolver.query(
-        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-        arrayOf(MediaStore.Downloads._ID),
-        "${MediaStore.Downloads.RELATIVE_PATH}=? AND ${MediaStore.Downloads.DISPLAY_NAME}=?",
-        arrayOf("Download/scenario/scenario1/", filename),
-        null
-    )
-
-    cursor?.use {
-        if (it.moveToFirst()) {
-            val id = it.getLong(0)
-            val uri = ContentUris.withAppendedId(
-                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                id
-            )
-            return resolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it)
-            }
-        }
-    }
-    return null
-}
-
-fun replayScenario(context: Context) {
-    val meta = loadMetaInfo(context)
-
-    meta.keys.sorted().forEach { pngName ->
-        val packageName = meta[pngName]!!
-        val bitmap = loadBitmap(context, pngName)
-
-        if (bitmap != null) {
-            processFrame(bitmap, packageName)
-        }
+    fun loadScenarioDirUri(context: Context): Uri? {
+        val s = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+            .getString(KEY_DIR_URI, null)
+        return s?.let(Uri::parse)
     }
 }
