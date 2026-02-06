@@ -1,264 +1,91 @@
-@file:Suppress("unused")
-
-package your.package.analyzer
-
-import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.consumeEach
-import java.util.concurrent.atomic.AtomicBoolean
+data class FilteredEvent(
+    val id: Long,
+    val parentId: Long?,   // parentId가 없거나(null) 리스트에 없으면 root 후보
+    val text: String
+)
 
 /**
- * Orchestrator: 병렬 VLM(Stage A) + 직렬 Context(Stage B)
+ * 뒤죽박죽 섞인 (id, parentId, text) 노드들을
+ * "indent로 hierarchy를 구별할 수 있는 텍스트"로 변환한다.
  *
- * - Stage A (VLM workers): CaptureTask(=image ref)를 받아 VLM extract -> action insert -> CTX_PENDING 마킹 -> ctxTrigger 깨움
- * - Stage B (CTX worker): ctxTrigger를 받으면 DB에서 CTX_PENDING 액션들을 가져와 순차 처리(분류/업데이트) 후 DONE 마킹
- *
- * Source of truth는 DB이고,
- * Channel은 "깨우기/흐름 제어" 용도로만 사용하도록 설계.
+ * 규칙:
+ * 1) root/최상위 노드는 parentId가 null이거나, parentId가 리스트에 존재하지 않는 노드들
+ * 2) 같은 depth(=같은 부모의 children)에서는 id 오름차순
+ * 3) 순환(cycle) / 고아(orphan) / parent 미존재 등 비정상 케이스도 최대한 출력한다
  */
-class AnalyzerOrchestrator(
-    private val appScope: CoroutineScope,
-    private val dispatcherVlm: CoroutineDispatcher = Dispatchers.IO,
-    private val dispatcherCtx: CoroutineDispatcher = Dispatchers.IO,
-    private val captureRepo: CaptureRepository,
-    private val actionRepo: ActionRepository,
-    private val contextPipeline: ContextPipeline,
-    private val extractor: ActionExtractor,         // VLM 단계
-    private val generator: ActionGenerator,         // 추론 없이 RDB insert
-    private val keyPool: ApiKeyPool,                // VLM 키 분배용
-    private val config: Config = Config(),
-) {
-    data class Config(
-        val vlmWorkerCount: Int = 6,
-        val captureQueueCapacity: Int = 64,
-        val ctxBatchSize: Int = 25,
-        val ctxMaxLoopsPerWake: Int = 10, // 한 번 깨어났을 때 너무 오래 점유하지 않도록 제한
-        val idleDelayMsWhenNoWork: Long = 1500L,
-        val retryBackoffMs: Long = 1200L,
-    )
+fun toIndentedHierarchyText(
+    events: List<FilteredEvent>,
+    indentUnit: String = "  ", // 2 spaces
+    showIds: Boolean = true
+): String {
+    if (events.isEmpty()) return ""
 
-    // 캡처가 들어올 때 넣는 큐: 큐에는 이미지 자체가 아니라 "참조"만 넣는다.
-    private val captureQueue = Channel<CaptureTask>(
-        capacity = config.captureQueueCapacity
-        // 필요 시 BufferOverflow 정책을 바꾸고 싶다면 Channel(...) 대신 Channel(capacity, onBufferOverflow=...) 사용
-    )
+    // id -> node
+    val byId: Map<Long, FilteredEvent> = events.associateBy { it.id }
 
-    // CTX worker를 깨우는 용도: 신호는 중복돼도 상관 없으니 CONFLATED로 마지막 신호만 유지.
-    private val ctxTrigger = Channel<Unit>(Channel.CONFLATED)
+    // parentId -> children list (id 오름차순 정렬)
+    val childrenByParent: Map<Long?, List<FilteredEvent>> =
+        events.groupBy { it.parentId }
+            .mapValues { (_, v) -> v.sortedBy { it.id } }
 
-    private var supervisorJob: Job? = null
-    private val started = AtomicBoolean(false)
+    // root 후보: parentId == null OR parentId가 리스트에 없음
+    val roots: List<FilteredEvent> = events
+        .filter { it.parentId == null || !byId.containsKey(it.parentId) }
+        .sortedBy { it.id }
 
-    /** 외부에서 캡처(참조)를 밀어 넣는 진입점 */
-    fun enqueueCapture(task: CaptureTask): Boolean {
-        // trySend는 non-suspending. 실패하면 false.
-        return captureQueue.trySend(task).isSuccess
+    // roots가 비었으면(전부 서로 parent로 물려있거나 cycle), 일단 id 가장 작은 것부터 시작
+    val startNodes: List<FilteredEvent> =
+        if (roots.isNotEmpty()) roots else events.sortedBy { it.id }.take(1)
+
+    val sb = StringBuilder()
+    val globallyPrinted = HashSet<Long>() // 정상 트리 출력에 성공한 노드들(중복 출력 방지)
+
+    fun lineOf(node: FilteredEvent, depth: Int): String {
+        val indent = indentUnit.repeat(depth.coerceAtLeast(0))
+        val label = if (showIds) "[${node.id}] ${node.text}" else node.text
+        return indent + label
     }
 
-    /** 전체 파이프라인 시작 */
-    fun start() {
-        if (!started.compareAndSet(false, true)) return
+    fun dfs(node: FilteredEvent, depth: Int, path: MutableSet<Long>) {
+        // cycle 감지: 현재 경로(path)에 이미 있으면 표시하고 종료
+        if (!path.add(node.id)) {
+            sb.append(indentUnit.repeat(depth))
+                .append(if (showIds) "[${node.id}] " else "")
+                .append("⟲ CYCLE -> ${node.text}")
+                .append('\n')
+            return
+        }
 
-        supervisorJob = appScope.launch(SupervisorJob()) {
-            // Stage A: VLM worker pool
-            repeat(config.vlmWorkerCount) { idx ->
-                launch(dispatcherVlm + CoroutineName("vlm-worker-$idx")) {
-                    vlmWorkerLoop(workerIndex = idx)
-                }
-            }
+        sb.append(lineOf(node, depth)).append('\n')
+        globallyPrinted.add(node.id)
 
-            // Stage B: single CTX worker
-            launch(dispatcherCtx + CoroutineName("ctx-worker")) {
-                ctxWorkerLoop()
+        val children = childrenByParent[node.id].orEmpty()
+        for (child in children) {
+            dfs(child, depth + 1, path)
+        }
+
+        path.remove(node.id)
+    }
+
+    // 1) root들부터 트리 출력
+    for (root in startNodes) {
+        dfs(root, 0, mutableSetOf())
+    }
+
+    // 2) 출력되지 못한 노드들(고아/분리 컴포넌트/잔여 cycle 등) 추가 출력
+    val remaining = events
+        .filter { it.id !in globallyPrinted }
+        .sortedBy { it.id }
+
+    if (remaining.isNotEmpty()) {
+        sb.append("\n== Unattached / Remaining nodes ==\n")
+        for (n in remaining) {
+            // 남은 노드들도 각각을 root처럼 출력해 보되, 중복/사이클은 dfs에서 처리됨
+            if (n.id !in globallyPrinted) {
+                dfs(n, 0, mutableSetOf())
             }
         }
     }
 
-    /** 전체 파이프라인 중지 */
-    fun stop() {
-        started.set(false)
-        supervisorJob?.cancel()
-        supervisorJob = null
-        // 큐들을 닫을지 여부는 앱 lifecycle에 따라 다름.
-        // 일반적으로 stop()에서는 cancel로 충분하고, 재시작을 원하면 close() 하지 않는 게 편함.
-    }
-
-    // ----------------------------
-    // Stage A: VLM workers
-    // ----------------------------
-
-    private suspend fun vlmWorkerLoop(workerIndex: Int) {
-        captureQueue.consumeEach { task ->
-            if (!started.get() || !currentCoroutineContext().isActive) return@consumeEach
-
-            // 1) capture row 상태를 VLM_RUNNING으로 바꾸고, 필요시 중복 처리 방지
-            val locked = captureRepo.tryMarkVlmRunning(task.captureId)
-            if (!locked) {
-                // 누군가 이미 처리 중이거나 완료됨
-                return@consumeEach
-            }
-
-            val key = keyPool.acquire()
-            try {
-                // 2) 실제 이미지 로드(참조->bytes/bitmap/uri 등)
-                val capture = captureRepo.loadCapture(task.captureId)
-                    ?: run {
-                        captureRepo.markFailed(task.captureId, reason = "CAPTURE_NOT_FOUND")
-                        return@consumeEach
-                    }
-
-                // 3) VLM extract
-                val extracted = extractor.extract(
-                    capture = capture,
-                    apiKey = key.value
-                )
-
-                // 4) action 생성(추론 없이 DB insert)
-                val actionId = generator.generate(extracted)
-
-                // 5) action 상태를 CTX_PENDING으로 마킹
-                actionRepo.markCtxPending(actionId)
-
-                // 6) capture 완료 마킹
-                captureRepo.markVlmDone(task.captureId, actionId = actionId)
-
-                // 7) CTX worker 깨우기
-                ctxTrigger.trySend(Unit)
-            } catch (ce: CancellationException) {
-                // 코루틴 취소는 그대로 throw
-                captureRepo.markFailed(task.captureId, reason = "CANCELLED")
-                throw ce
-            } catch (t: Throwable) {
-                // 실패 처리 (재시도 전략은 여기서/Repo에서 결정)
-                captureRepo.markFailed(task.captureId, reason = "VLM_ERROR:${t.javaClass.simpleName}")
-                delay(config.retryBackoffMs)
-            } finally {
-                keyPool.release(key)
-            }
-        }
-    }
-
-    // ----------------------------
-    // Stage B: CTX worker (single)
-    // ----------------------------
-
-    private suspend fun ctxWorkerLoop() {
-        while (started.get() && currentCoroutineContext().isActive) {
-            // 신호를 기다리되, 혹시 신호 누락이나 초기 실행을 위해 타임아웃/폴링 혼합 가능
-            val gotSignal = withTimeoutOrNull(config.idleDelayMsWhenNoWork) {
-                ctxTrigger.receive()
-                true
-            } ?: false
-
-            // 신호가 없더라도 주기적으로 한 번은 확인(옵션)
-            var loops = 0
-            while (currentCoroutineContext().isActive && loops < config.ctxMaxLoopsPerWake) {
-                loops++
-
-                // 1) CTX_PENDING 액션들을 가져오고 "running lock"을 건다 (중복 처리 방지)
-                val actionIds = actionRepo.fetchAndMarkCtxRunning(limit = config.ctxBatchSize)
-                if (actionIds.isEmpty()) break
-
-                // 2) 각 액션을 순차적으로 처리
-                for (actionId in actionIds) {
-                    try {
-                        contextPipeline.processOne(actionId)
-                        actionRepo.markDone(actionId)
-                    } catch (ce: CancellationException) {
-                        actionRepo.markFailed(actionId, reason = "CANCELLED")
-                        throw ce
-                    } catch (t: Throwable) {
-                        // 실패해도 파이프라인 전체는 죽지 않게
-                        actionRepo.markFailed(actionId, reason = "CTX_ERROR:${t.javaClass.simpleName}")
-                    }
-                }
-            }
-
-            // 신호도 없었고, 처리할 것도 없었으면 약간 쉰다
-            if (!gotSignal) delay(config.idleDelayMsWhenNoWork)
-        }
-    }
-
-    // ----------------------------
-    // Types / Interfaces
-    // ----------------------------
-
-    data class CaptureTask(
-        val captureId: Long,
-        val createdAtMs: Long = System.currentTimeMillis(),
-    )
-
-    /**
-     * 캡처는 이미지/텍스트/메타가 있는 원천 데이터.
-     * 큐에는 이걸 직접 넣지 말고, captureId로 DB에서 load하는 형태 권장.
-     */
-    interface CaptureRepository {
-        suspend fun loadCapture(captureId: Long): CaptureData?
-        suspend fun tryMarkVlmRunning(captureId: Long): Boolean
-        suspend fun markVlmDone(captureId: Long, actionId: Long)
-        suspend fun markFailed(captureId: Long, reason: String)
-    }
-
-    data class CaptureData(
-        val id: Long,
-        val imageUri: String,            // or file path
-        val metaJson: String? = null,
-        val capturedAtMs: Long,
-    )
-
-    interface ActionRepository {
-        suspend fun markCtxPending(actionId: Long)
-        suspend fun fetchAndMarkCtxRunning(limit: Int): List<Long>
-        suspend fun markDone(actionId: Long)
-        suspend fun markFailed(actionId: Long, reason: String)
-    }
-
-    /**
-     * Stage A: VLM extract 결과 (구조화된 액션).
-     */
-    data class ExtractedAction(
-        val type: String,
-        val payloadJson: String,
-        val capturedAtMs: Long,
-    )
-
-    interface ActionExtractor {
-        suspend fun extract(capture: CaptureData, apiKey: String): ExtractedAction
-    }
-
-    interface ActionGenerator {
-        /** DB insert 후 actionId 반환 */
-        suspend fun generate(extracted: ExtractedAction): Long
-    }
-
-    /**
-     * Stage B: context_selector + context_updater를 묶은 "직렬 파이프라인"
-     * - 내부에서:
-     *   - 미분류 액션 로딩(또는 actionId 1개 기준으로 주변 컨텍스트/액션 로딩)
-     *   - LLM 분류
-     *   - updater LLM
-     *   - DB 반영
-     */
-    interface ContextPipeline {
-        suspend fun processOne(actionId: Long)
-    }
-
-    // ----------------------------
-    // API Key Pool
-    // ----------------------------
-
-    interface ApiKeyPool {
-        suspend fun acquire(): ApiKeyLease
-        fun release(lease: ApiKeyLease)
-    }
-
-    data class ApiKeyLease(val value: String)
+    return sb.toString().trimEnd()
 }
-
-/* ----------------------------
-   Notes (간단)
-   - action/capture status 설계는 Repo에서 관리하는 게 깔끔합니다.
-   - tryMarkVlmRunning / fetchAndMarkCtxRunning 은 "원자적 업데이트"로 구현하는 게 중요합니다.
-     예) UPDATE ... WHERE status = PENDING LIMIT N returning id
-   - ctxTrigger는 CONFLATED라 "한꺼번에 많이 깨우기"가 자동으로 눌립니다.
----------------------------- */
