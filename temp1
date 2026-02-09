@@ -1,91 +1,254 @@
-data class FilteredEvent(
-    val id: Long,
-    val parentId: Long?,   // parentId가 없거나(null) 리스트에 없으면 root 후보
-    val text: String
+// ---------- Input model (from parser) ----------
+data class IncomingChat(
+    val sender: String,
+    val message: String,
+    val messageDate: Long?, // date-only timestamp, nullable
 )
 
-/**
- * 뒤죽박죽 섞인 (id, parentId, text) 노드들을
- * "indent로 hierarchy를 구별할 수 있는 텍스트"로 변환한다.
- *
- * 규칙:
- * 1) root/최상위 노드는 parentId가 null이거나, parentId가 리스트에 존재하지 않는 노드들
- * 2) 같은 depth(=같은 부모의 children)에서는 id 오름차순
- * 3) 순환(cycle) / 고아(orphan) / parent 미존재 등 비정상 케이스도 최대한 출력한다
- */
-fun toIndentedHierarchyText(
-    events: List<FilteredEvent>,
-    indentUnit: String = "  ", // 2 spaces
-    showIds: Boolean = true
-): String {
-    if (events.isEmpty()) return ""
+// ---------- Room Entity ----------
+import androidx.room.*
 
-    // id -> node
-    val byId: Map<Long, FilteredEvent> = events.associateBy { it.id }
+@Entity(
+    tableName = "chat_msg",
+    indices = [
+        Index(value = ["roomName", "sender", "message"]),
+        Index(value = ["roomName", "lastWatchedAt"]),
+        Index(value = ["roomName", "messageDate"]),
+    ]
+)
+data class ChatMsgEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
 
-    // parentId -> children list (id 오름차순 정렬)
-    val childrenByParent: Map<Long?, List<FilteredEvent>> =
-        events.groupBy { it.parentId }
-            .mapValues { (_, v) -> v.sortedBy { it.id } }
+    val roomName: String,
+    val sender: String,
+    val message: String,
 
-    // root 후보: parentId == null OR parentId가 리스트에 없음
-    val roots: List<FilteredEvent> = events
-        .filter { it.parentId == null || !byId.containsKey(it.parentId) }
-        .sortedBy { it.id }
+    // nullable, "observed date label" (fill only: null -> non-null)
+    val messageDate: Long? = null,
 
-    // roots가 비었으면(전부 서로 parent로 물려있거나 cycle), 일단 id 가장 작은 것부터 시작
-    val startNodes: List<FilteredEvent> =
-        if (roots.isNotEmpty()) roots else events.sortedBy { it.id }.take(1)
+    val prevId: Long? = null,
+    val nextId: Long? = null,
 
-    val sb = StringBuilder()
-    val globallyPrinted = HashSet<Long>() // 정상 트리 출력에 성공한 노드들(중복 출력 방지)
+    val firstSeenAt: Long,
+    val lastWatchedAt: Long,
+)
 
-    fun lineOf(node: FilteredEvent, depth: Int): String {
-        val indent = indentUnit.repeat(depth.coerceAtLeast(0))
-        val label = if (showIds) "[${node.id}] ${node.text}" else node.text
-        return indent + label
-    }
+// ---------- DAO ----------
+@Dao
+abstract class ChatMsgDao {
 
-    fun dfs(node: FilteredEvent, depth: Int, path: MutableSet<Long>) {
-        // cycle 감지: 현재 경로(path)에 이미 있으면 표시하고 종료
-        if (!path.add(node.id)) {
-            sb.append(indentUnit.repeat(depth))
-                .append(if (showIds) "[${node.id}] " else "")
-                .append("⟲ CYCLE -> ${node.text}")
-                .append('\n')
-            return
+    // --- 1) Queries for resolving ---
+    @Query("""
+        SELECT * FROM chat_msg
+        WHERE roomName = :roomName
+          AND sender   = :sender
+          AND message  = :message
+          AND messageDate = :messageDate
+        LIMIT 1
+    """)
+    abstract suspend fun findExactByDate(
+        roomName: String,
+        sender: String,
+        message: String,
+        messageDate: Long
+    ): ChatMsgEntity?
+
+    /**
+     * Candidate pool for "date == null" resolve.
+     * We prefer messageDate IS NULL candidates to avoid collapsing distinct-day duplicates.
+     */
+    @Query("""
+        SELECT * FROM chat_msg
+        WHERE roomName = :roomName
+          AND sender   = :sender
+          AND message  = :message
+        ORDER BY
+          CASE WHEN messageDate IS NULL THEN 0 ELSE 1 END ASC,
+          lastWatchedAt DESC,
+          id DESC
+        LIMIT :limit
+    """)
+    abstract suspend fun findRecentCandidates(
+        roomName: String,
+        sender: String,
+        message: String,
+        limit: Int
+    ): List<ChatMsgEntity>
+
+    // --- 2) Inserts / updates ---
+    @Insert
+    abstract suspend fun insertRow(entity: ChatMsgEntity): Long
+
+    /**
+     * lastWatchedAt always updated.
+     * messageDate filled only when DB is NULL and incoming is non-null.
+     */
+    @Query("""
+        UPDATE chat_msg
+        SET lastWatchedAt = :now,
+            messageDate = COALESCE(messageDate, :incomingDate)
+        WHERE id = :id
+    """)
+    abstract suspend fun touchAndMaybeFillDate(
+        id: Long,
+        now: Long,
+        incomingDate: Long?
+    )
+
+    // --- 3) Link post-processing (safe: fill only if NULL) ---
+    @Query("""
+        UPDATE chat_msg
+        SET prevId = :prevId
+        WHERE id = :id AND prevId IS NULL
+    """)
+    abstract suspend fun setPrevIfNull(id: Long, prevId: Long)
+
+    @Query("""
+        UPDATE chat_msg
+        SET nextId = :nextId
+        WHERE id = :id AND nextId IS NULL
+    """)
+    abstract suspend fun setNextIfNull(id: Long, nextId: Long)
+
+    // Optional: if you want to "hard reset" a node's prev/next in rare cases, add explicit queries.
+    // For now, we stay conservative.
+
+    // ---------- Main API ----------
+    /**
+     * Inserts/merges a *contiguous* sequence (entities order is guaranteed contiguous).
+     * Calls are out-of-order globally, so we:
+     * - Resolve rows conservatively
+     * - Always update lastWatchedAt
+     * - Fill messageDate only (null -> non-null)
+     * - After insert/resolve, connect prev/next inside this call by filling NULL links only
+     *
+     * IMPORTANT: "conceptual unique" baseKey = (roomName, sender, message)
+     *            but duplicates in real chat are possible, so null-date case is conservative:
+     *            - If same baseKey appears multiple times in this call, we force NEW rows for repeats.
+     */
+    @Transaction
+    open suspend fun insertEntities(
+        roomName: String,
+        entities: List<IncomingChat>,
+        candidateLimit: Int = 20
+    ) {
+        if (entities.isEmpty()) return
+        val now = System.currentTimeMillis()
+
+        // Tracks how many times a baseKey appeared *within this single call*.
+        // If baseKey repeats, we treat them as distinct messages (force new rows for repeats).
+        val seenInThisCall = HashMap<String, Int>(entities.size)
+
+        val resolvedIds = LongArray(entities.size)
+
+        for (i in entities.indices) {
+            val e = entities[i]
+            val baseKey = makeBaseKey(roomName, e.sender, e.message)
+
+            val count = (seenInThisCall[baseKey] ?: 0) + 1
+            seenInThisCall[baseKey] = count
+
+            val resolvedId = resolveOrInsert(
+                roomName = roomName,
+                e = e,
+                now = now,
+                baseKeyOccurrence = count,
+                candidateLimit = candidateLimit
+            )
+
+            // Always touch & fill date if possible
+            touchAndMaybeFillDate(resolvedId, now, e.messageDate)
+
+            resolvedIds[i] = resolvedId
         }
 
-        sb.append(lineOf(node, depth)).append('\n')
-        globallyPrinted.add(node.id)
-
-        val children = childrenByParent[node.id].orEmpty()
-        for (child in children) {
-            dfs(child, depth + 1, path)
-        }
-
-        path.remove(node.id)
-    }
-
-    // 1) root들부터 트리 출력
-    for (root in startNodes) {
-        dfs(root, 0, mutableSetOf())
-    }
-
-    // 2) 출력되지 못한 노드들(고아/분리 컴포넌트/잔여 cycle 등) 추가 출력
-    val remaining = events
-        .filter { it.id !in globallyPrinted }
-        .sortedBy { it.id }
-
-    if (remaining.isNotEmpty()) {
-        sb.append("\n== Unattached / Remaining nodes ==\n")
-        for (n in remaining) {
-            // 남은 노드들도 각각을 root처럼 출력해 보되, 중복/사이클은 dfs에서 처리됨
-            if (n.id !in globallyPrinted) {
-                dfs(n, 0, mutableSetOf())
+        // Post-process links inside this contiguous sequence
+        // We do NOT overwrite existing links (fill-only).
+        for (i in entities.indices) {
+            val id = resolvedIds[i]
+            if (i > 0) {
+                val prev = resolvedIds[i - 1]
+                if (prev != id) setPrevIfNull(id, prev)
+            }
+            if (i < entities.lastIndex) {
+                val next = resolvedIds[i + 1]
+                if (next != id) setNextIfNull(id, next)
             }
         }
     }
 
-    return sb.toString().trimEnd()
+    // ---------- Resolve logic ----------
+    private suspend fun resolveOrInsert(
+        roomName: String,
+        e: IncomingChat,
+        now: Long,
+        baseKeyOccurrence: Int,
+        candidateLimit: Int
+    ): Long {
+        // 1) If we have a non-null date, treat (baseKey + date) as strong identity.
+        if (e.messageDate != null) {
+            val exact = findExactByDate(roomName, e.sender, e.message, e.messageDate)
+            if (exact != null) return exact.id
+
+            // No match -> new row with date
+            return insertRow(
+                ChatMsgEntity(
+                    roomName = roomName,
+                    sender = e.sender,
+                    message = e.message,
+                    messageDate = e.messageDate,
+                    prevId = null,
+                    nextId = null,
+                    firstSeenAt = now,
+                    lastWatchedAt = now
+                )
+            )
+        }
+
+        // 2) messageDate == null: conservative.
+        // If same baseKey appears multiple times within this call, we assume they are distinct messages.
+        if (baseKeyOccurrence > 1) {
+            return insertRow(
+                ChatMsgEntity(
+                    roomName = roomName,
+                    sender = e.sender,
+                    message = e.message,
+                    messageDate = null,
+                    prevId = null,
+                    nextId = null,
+                    firstSeenAt = now,
+                    lastWatchedAt = now
+                )
+            )
+        }
+
+        // 3) Otherwise, try to match a recent candidate BUT prefer candidates with messageDate IS NULL.
+        val candidates = findRecentCandidates(roomName, e.sender, e.message, candidateLimit)
+
+        val best = candidates.firstOrNull { it.messageDate == null }
+            ?: run {
+                // If none null, we usually avoid merging into dated rows (risk: different-day same text).
+                // So default is "insert new". If you *want* to allow merging into dated rows, pick candidates[0].
+                null
+            }
+
+        if (best != null) return best.id
+
+        // 4) No safe match -> insert new
+        return insertRow(
+            ChatMsgEntity(
+                roomName = roomName,
+                sender = e.sender,
+                message = e.message,
+                messageDate = null,
+                prevId = null,
+                nextId = null,
+                firstSeenAt = now,
+                lastWatchedAt = now
+            )
+        )
+    }
+
+    private fun makeBaseKey(roomName: String, sender: String, message: String): String =
+        roomName + "\u0001" + sender + "\u0001" + message
 }
