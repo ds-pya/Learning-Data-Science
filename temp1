@@ -1,254 +1,112 @@
-// ---------- Input model (from parser) ----------
-data class IncomingChat(
-    val sender: String,
-    val message: String,
-    val messageDate: Long?, // date-only timestamp, nullable
-)
-
-// ---------- Room Entity ----------
-import androidx.room.*
-
-@Entity(
-    tableName = "chat_msg",
-    indices = [
-        Index(value = ["roomName", "sender", "message"]),
-        Index(value = ["roomName", "lastWatchedAt"]),
-        Index(value = ["roomName", "messageDate"]),
-    ]
-)
-data class ChatMsgEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
-
+data class ChatEntity(
     val roomName: String,
     val sender: String,
     val message: String,
-
-    // nullable, "observed date label" (fill only: null -> non-null)
-    val messageDate: Long? = null,
-
-    val prevId: Long? = null,
-    val nextId: Long? = null,
-
-    val firstSeenAt: Long,
-    val lastWatchedAt: Long,
+    val messageDate: Long?
 )
 
-// ---------- DAO ----------
-@Dao
-abstract class ChatMsgDao {
+interface ChatRepository {
+    suspend fun matchingEntity(roomName: String, entities: List<ChatEntity>): List<Long?>
+    suspend fun deleteRoom(roomName: String)
+    suspend fun insertAll(roomName: String, entities: List<ChatEntity>): List<Long>
+    suspend fun insertOne(roomName: String, entity: ChatEntity): Long
+    suspend fun postProcessReset(roomName: String, insertedIds: List<Long>, entities: List<ChatEntity>)
+    suspend fun postProcessAllMatched(roomName: String, matchedIds: List<Long>, entities: List<ChatEntity>)
+    suspend fun postProcessMixed(roomName: String, resolvedIds: List<Long>, entities: List<ChatEntity>)
+}
 
-    // --- 1) Queries for resolving ---
-    @Query("""
-        SELECT * FROM chat_msg
-        WHERE roomName = :roomName
-          AND sender   = :sender
-          AND message  = :message
-          AND messageDate = :messageDate
-        LIMIT 1
-    """)
-    abstract suspend fun findExactByDate(
-        roomName: String,
-        sender: String,
-        message: String,
-        messageDate: Long
-    ): ChatMsgEntity?
+class ChatInsertUseCase(
+    private val repository: ChatRepository
+) {
 
-    /**
-     * Candidate pool for "date == null" resolve.
-     * We prefer messageDate IS NULL candidates to avoid collapsing distinct-day duplicates.
-     */
-    @Query("""
-        SELECT * FROM chat_msg
-        WHERE roomName = :roomName
-          AND sender   = :sender
-          AND message  = :message
-        ORDER BY
-          CASE WHEN messageDate IS NULL THEN 0 ELSE 1 END ASC,
-          lastWatchedAt DESC,
-          id DESC
-        LIMIT :limit
-    """)
-    abstract suspend fun findRecentCandidates(
-        roomName: String,
-        sender: String,
-        message: String,
-        limit: Int
-    ): List<ChatMsgEntity>
-
-    // --- 2) Inserts / updates ---
-    @Insert
-    abstract suspend fun insertRow(entity: ChatMsgEntity): Long
-
-    /**
-     * lastWatchedAt always updated.
-     * messageDate filled only when DB is NULL and incoming is non-null.
-     */
-    @Query("""
-        UPDATE chat_msg
-        SET lastWatchedAt = :now,
-            messageDate = COALESCE(messageDate, :incomingDate)
-        WHERE id = :id
-    """)
-    abstract suspend fun touchAndMaybeFillDate(
-        id: Long,
-        now: Long,
-        incomingDate: Long?
-    )
-
-    // --- 3) Link post-processing (safe: fill only if NULL) ---
-    @Query("""
-        UPDATE chat_msg
-        SET prevId = :prevId
-        WHERE id = :id AND prevId IS NULL
-    """)
-    abstract suspend fun setPrevIfNull(id: Long, prevId: Long)
-
-    @Query("""
-        UPDATE chat_msg
-        SET nextId = :nextId
-        WHERE id = :id AND nextId IS NULL
-    """)
-    abstract suspend fun setNextIfNull(id: Long, nextId: Long)
-
-    // Optional: if you want to "hard reset" a node's prev/next in rare cases, add explicit queries.
-    // For now, we stay conservative.
-
-    // ---------- Main API ----------
-    /**
-     * Inserts/merges a *contiguous* sequence (entities order is guaranteed contiguous).
-     * Calls are out-of-order globally, so we:
-     * - Resolve rows conservatively
-     * - Always update lastWatchedAt
-     * - Fill messageDate only (null -> non-null)
-     * - After insert/resolve, connect prev/next inside this call by filling NULL links only
-     *
-     * IMPORTANT: "conceptual unique" baseKey = (roomName, sender, message)
-     *            but duplicates in real chat are possible, so null-date case is conservative:
-     *            - If same baseKey appears multiple times in this call, we force NEW rows for repeats.
-     */
-    @Transaction
-    open suspend fun insertEntities(
-        roomName: String,
-        entities: List<IncomingChat>,
-        candidateLimit: Int = 20
-    ) {
+    suspend fun insertEntities(roomName: String, entities: List<ChatEntity>) {
         if (entities.isEmpty()) return
-        val now = System.currentTimeMillis()
 
-        // Tracks how many times a baseKey appeared *within this single call*.
-        // If baseKey repeats, we treat them as distinct messages (force new rows for repeats).
-        val seenInThisCall = HashMap<String, Int>(entities.size)
+        val idList = repository.matchingEntity(roomName, entities)
+        require(idList.size == entities.size)
 
-        val resolvedIds = LongArray(entities.size)
+        val allNull = idList.all { it == null }
+        val allNonNull = idList.all { it != null }
 
-        for (i in entities.indices) {
-            val e = entities[i]
-            val baseKey = makeBaseKey(roomName, e.sender, e.message)
-
-            val count = (seenInThisCall[baseKey] ?: 0) + 1
-            seenInThisCall[baseKey] = count
-
-            val resolvedId = resolveOrInsert(
-                roomName = roomName,
-                e = e,
-                now = now,
-                baseKeyOccurrence = count,
-                candidateLimit = candidateLimit
-            )
-
-            // Always touch & fill date if possible
-            touchAndMaybeFillDate(resolvedId, now, e.messageDate)
-
-            resolvedIds[i] = resolvedId
-        }
-
-        // Post-process links inside this contiguous sequence
-        // We do NOT overwrite existing links (fill-only).
-        for (i in entities.indices) {
-            val id = resolvedIds[i]
-            if (i > 0) {
-                val prev = resolvedIds[i - 1]
-                if (prev != id) setPrevIfNull(id, prev)
+        when {
+            allNull -> {
+                repository.deleteRoom(roomName)
+                val insertedIds = repository.insertAll(roomName, entities)
+                repository.postProcessReset(roomName, insertedIds, entities)
             }
-            if (i < entities.lastIndex) {
-                val next = resolvedIds[i + 1]
-                if (next != id) setNextIfNull(id, next)
+
+            allNonNull -> {
+                val matchedIds = idList.map { it!! }
+                repository.postProcessAllMatched(roomName, matchedIds, entities)
+            }
+
+            else -> {
+                val resolvedIds = resolveMixed(roomName, entities, idList)
+                repository.postProcessMixed(roomName, resolvedIds, entities)
             }
         }
     }
 
-    // ---------- Resolve logic ----------
-    private suspend fun resolveOrInsert(
+    private suspend fun resolveMixed(
         roomName: String,
-        e: IncomingChat,
-        now: Long,
-        baseKeyOccurrence: Int,
-        candidateLimit: Int
-    ): Long {
-        // 1) If we have a non-null date, treat (baseKey + date) as strong identity.
-        if (e.messageDate != null) {
-            val exact = findExactByDate(roomName, e.sender, e.message, e.messageDate)
-            if (exact != null) return exact.id
+        entities: List<ChatEntity>,
+        idList: List<Long?>
+    ): List<Long> {
+        val (anchorStart, anchorEnd) = longestNonNullBlock(idList)
 
-            // No match -> new row with date
-            return insertRow(
-                ChatMsgEntity(
-                    roomName = roomName,
-                    sender = e.sender,
-                    message = e.message,
-                    messageDate = e.messageDate,
-                    prevId = null,
-                    nextId = null,
-                    firstSeenAt = now,
-                    lastWatchedAt = now
-                )
-            )
+        if (anchorStart == -1) {
+            return repository.insertAll(roomName, entities)
         }
 
-        // 2) messageDate == null: conservative.
-        // If same baseKey appears multiple times within this call, we assume they are distinct messages.
-        if (baseKeyOccurrence > 1) {
-            return insertRow(
-                ChatMsgEntity(
-                    roomName = roomName,
-                    sender = e.sender,
-                    message = e.message,
-                    messageDate = null,
-                    prevId = null,
-                    nextId = null,
-                    firstSeenAt = now,
-                    lastWatchedAt = now
-                )
-            )
+        val n = entities.size
+        val resolved = LongArray(n)
+
+        for (i in anchorStart..anchorEnd) {
+            val id = idList[i]
+            if (id != null) resolved[i] = id
         }
 
-        // 3) Otherwise, try to match a recent candidate BUT prefer candidates with messageDate IS NULL.
-        val candidates = findRecentCandidates(roomName, e.sender, e.message, candidateLimit)
+        for (i in 0 until n) {
+            if (resolved[i] != 0L) continue
+            val matched = idList[i]
+            resolved[i] = matched ?: repository.insertOne(roomName, entities[i])
+        }
 
-        val best = candidates.firstOrNull { it.messageDate == null }
-            ?: run {
-                // If none null, we usually avoid merging into dated rows (risk: different-day same text).
-                // So default is "insert new". If you *want* to allow merging into dated rows, pick candidates[0].
-                null
-            }
-
-        if (best != null) return best.id
-
-        // 4) No safe match -> insert new
-        return insertRow(
-            ChatMsgEntity(
-                roomName = roomName,
-                sender = e.sender,
-                message = e.message,
-                messageDate = null,
-                prevId = null,
-                nextId = null,
-                firstSeenAt = now,
-                lastWatchedAt = now
-            )
-        )
+        return resolved.toList()
     }
 
-    private fun makeBaseKey(roomName: String, sender: String, message: String): String =
-        roomName + "\u0001" + sender + "\u0001" + message
+    private fun longestNonNullBlock(idList: List<Long?>): Pair<Int, Int> {
+        var bestStart = -1
+        var bestEnd = -1
+        var bestLen = 0
+
+        var curStart = -1
+        var curLen = 0
+
+        fun commit(endExclusive: Int) {
+            if (curLen <= 0) return
+            val curEnd = endExclusive - 1
+            val better =
+                curLen > bestLen || (curLen == bestLen && curEnd > bestEnd)
+            if (better) {
+                bestLen = curLen
+                bestStart = curStart
+                bestEnd = curEnd
+            }
+        }
+
+        for (i in idList.indices) {
+            if (idList[i] != null) {
+                if (curLen == 0) curStart = i
+                curLen++
+            } else {
+                commit(i)
+                curLen = 0
+                curStart = -1
+            }
+        }
+        commit(idList.size)
+
+        return bestStart to bestEnd
+    }
 }
