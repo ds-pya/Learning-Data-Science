@@ -110,3 +110,73 @@ class ChatInsertUseCase(
         return bestStart to bestEnd
     }
 }
+
+
+class ChatRepositoryImpl(
+    private val dao: ChatDao
+) : ChatRepository {
+
+    override suspend fun postProcessReset(
+        roomName: String,
+        insertedIds: List<Long>,
+        entities: List<ChatEntity>
+    ) {
+        val now = System.currentTimeMillis()
+
+        for (i in insertedIds.indices) {
+            val id = insertedIds[i]
+
+            dao.updateWatchedAndDate(id, now, entities[i].messageDate)
+
+            if (i > 0) {
+                dao.setPrevIfNull(id, insertedIds[i - 1])
+            }
+            if (i < insertedIds.lastIndex) {
+                dao.setNextIfNull(id, insertedIds[i + 1])
+            }
+        }
+    }
+
+    override suspend fun postProcessAllMatched(
+        roomName: String,
+        matchedIds: List<Long>,
+        entities: List<ChatEntity>
+    ) {
+        val now = System.currentTimeMillis()
+
+        for (i in matchedIds.indices) {
+            dao.updateWatchedAndDate(
+                id = matchedIds[i],
+                now = now,
+                incomingDate = entities[i].messageDate
+            )
+        }
+    }
+
+    override suspend fun postProcessMixed(
+        roomName: String,
+        resolvedIds: List<Long>,
+        entities: List<ChatEntity>
+    ) {
+        val now = System.currentTimeMillis()
+
+        for (i in resolvedIds.indices) {
+            val id = resolvedIds[i]
+
+            dao.updateWatchedAndDate(id, now, entities[i].messageDate)
+
+            if (i > 0) {
+                dao.setPrevIfNull(id, resolvedIds[i - 1])
+            }
+            if (i < resolvedIds.lastIndex) {
+                dao.setNextIfNull(id, resolvedIds[i + 1])
+            }
+        }
+    }
+}
+
+interface ChatDao {
+    suspend fun updateWatchedAndDate(id: Long, now: Long, incomingDate: Long?)
+    suspend fun setPrevIfNull(id: Long, prevId: Long)
+    suspend fun setNextIfNull(id: Long, nextId: Long)
+}
