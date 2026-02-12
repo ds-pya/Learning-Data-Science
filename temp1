@@ -1,25 +1,39 @@
-package com.example.lockguide.notification
+package com.example.lockguide.ui
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.content.Context
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import com.example.lockguide.auth.AuthGate
+import com.example.lockguide.launch.LaunchTarget
 
-object NotificationChannels {
-    const val CHANNEL_ID = "lock_suggest"
+class GuideActivity : ComponentActivity() {
 
-    fun ensure(ctx: Context) {
-        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (nm.getNotificationChannel(CHANNEL_ID) != null) return
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
 
-        nm.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                "Lock Suggestions",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
-            }
-        )
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+
+        setContent {
+            GuideScreen(
+                onChoice = { choice ->
+                    AuthGate.authenticate(
+                        activity = this,
+                        title = "잠금 해제",
+                        subtitle = "선택한 작업을 실행하려면 인증이 필요합니다.",
+                        onSuccess = {
+                            LaunchTarget.launch(this, choice)
+                            finish()
+                        },
+                        onCancelOrFail = {
+                            // 실패/취소 시 그냥 유지하거나 닫기
+                        }
+                    )
+                },
+                onDismiss = { finish() }
+            )
+        }
     }
 }
+
+enum class Choice { CAR, TRANSIT, TAXI }
