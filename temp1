@@ -1,39 +1,91 @@
 package com.example.lockguide.ui
 
-import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import com.example.lockguide.auth.AuthGate
-import com.example.lockguide.launch.LaunchTarget
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.lockguide.R
 
-class GuideActivity : ComponentActivity() {
+@Composable
+fun GuideScreen(
+    onChoice: (Choice) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.35f))
+            .padding(16.dp)
+    ) {
+        Text(
+            text = "닫기",
+            color = Color.White.copy(alpha = 0.85f),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .clickable { onDismiss() }
+                .padding(8.dp)
+        )
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-
-        setShowWhenLocked(true)
-        setTurnScreenOn(true)
-
-        setContent {
-            GuideScreen(
-                onChoice = { choice ->
-                    AuthGate.authenticate(
-                        activity = this,
-                        title = "잠금 해제",
-                        subtitle = "선택한 작업을 실행하려면 인증이 필요합니다.",
-                        onSuccess = {
-                            LaunchTarget.launch(this, choice)
-                            finish()
-                        },
-                        onCancelOrFail = {
-                            // 실패/취소 시 그냥 유지하거나 닫기
-                        }
-                    )
-                },
-                onDismiss = { finish() }
+        Column(
+            modifier = Modifier.align(Alignment.BottomCenter),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            SpeechBubble(
+                text = "강남역 18:00 약속!\n지금 출발하면 35분 정도야.\n어떻게 갈까?"
             )
+
+            Spacer(Modifier.height(12.dp))
+
+            Image(
+                painter = painterResource(id = R.drawable.dog_placeholder),
+                contentDescription = "guide dog",
+                modifier = Modifier.size(160.dp)
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ChoiceButton("🚗 자동차") { onChoice(Choice.CAR) }
+                ChoiceButton("🚇 대중교통") { onChoice(Choice.TRANSIT) }
+                ChoiceButton("🚕 택시") { onChoice(Choice.TAXI) }
+            }
+
+            Spacer(Modifier.height(18.dp))
         }
     }
 }
 
-enum class Choice { CAR, TRANSIT, TAXI }
+@Composable
+private fun SpeechBubble(text: String) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color.White)
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        Text(text = text, color = Color.Black, fontSize = 15.sp)
+    }
+}
+
+@Composable
+private fun ChoiceButton(label: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.White.copy(alpha = 0.92f))
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Text(label, color = Color.Black, fontSize = 14.sp)
+    }
+}
