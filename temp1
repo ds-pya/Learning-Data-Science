@@ -1,182 +1,25 @@
-data class ChatEntity(
-    val roomName: String,
-    val sender: String,
-    val message: String,
-    val messageDate: Long?
-)
+package com.example.lockguide.notification
 
-interface ChatRepository {
-    suspend fun matchingEntity(roomName: String, entities: List<ChatEntity>): List<Long?>
-    suspend fun deleteRoom(roomName: String)
-    suspend fun insertAll(roomName: String, entities: List<ChatEntity>): List<Long>
-    suspend fun insertOne(roomName: String, entity: ChatEntity): Long
-    suspend fun postProcessReset(roomName: String, insertedIds: List<Long>, entities: List<ChatEntity>)
-    suspend fun postProcessAllMatched(roomName: String, matchedIds: List<Long>, entities: List<ChatEntity>)
-    suspend fun postProcessMixed(roomName: String, resolvedIds: List<Long>, entities: List<ChatEntity>)
-}
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
 
-class ChatInsertUseCase(
-    private val repository: ChatRepository
-) {
+object NotificationChannels {
+    const val CHANNEL_ID = "lock_suggest"
 
-    suspend fun insertEntities(roomName: String, entities: List<ChatEntity>) {
-        if (entities.isEmpty()) return
+    fun ensure(ctx: Context) {
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (nm.getNotificationChannel(CHANNEL_ID) != null) return
 
-        val idList = repository.matchingEntity(roomName, entities)
-        require(idList.size == entities.size)
-
-        val allNull = idList.all { it == null }
-        val allNonNull = idList.all { it != null }
-
-        when {
-            allNull -> {
-                repository.deleteRoom(roomName)
-                val insertedIds = repository.insertAll(roomName, entities)
-                repository.postProcessReset(roomName, insertedIds, entities)
+        nm.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID,
+                "Lock Suggestions",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             }
-
-            allNonNull -> {
-                val matchedIds = idList.map { it!! }
-                repository.postProcessAllMatched(roomName, matchedIds, entities)
-            }
-
-            else -> {
-                val resolvedIds = resolveMixed(roomName, entities, idList)
-                repository.postProcessMixed(roomName, resolvedIds, entities)
-            }
-        }
+        )
     }
-
-    private suspend fun resolveMixed(
-        roomName: String,
-        entities: List<ChatEntity>,
-        idList: List<Long?>
-    ): List<Long> {
-        val (anchorStart, anchorEnd) = longestNonNullBlock(idList)
-
-        if (anchorStart == -1) {
-            return repository.insertAll(roomName, entities)
-        }
-
-        val n = entities.size
-        val resolved = LongArray(n)
-
-        for (i in anchorStart..anchorEnd) {
-            val id = idList[i]
-            if (id != null) resolved[i] = id
-        }
-
-        for (i in 0 until n) {
-            if (resolved[i] != 0L) continue
-            val matched = idList[i]
-            resolved[i] = matched ?: repository.insertOne(roomName, entities[i])
-        }
-
-        return resolved.toList()
-    }
-
-    private fun longestNonNullBlock(idList: List<Long?>): Pair<Int, Int> {
-        var bestStart = -1
-        var bestEnd = -1
-        var bestLen = 0
-
-        var curStart = -1
-        var curLen = 0
-
-        fun commit(endExclusive: Int) {
-            if (curLen <= 0) return
-            val curEnd = endExclusive - 1
-            val better =
-                curLen > bestLen || (curLen == bestLen && curEnd > bestEnd)
-            if (better) {
-                bestLen = curLen
-                bestStart = curStart
-                bestEnd = curEnd
-            }
-        }
-
-        for (i in idList.indices) {
-            if (idList[i] != null) {
-                if (curLen == 0) curStart = i
-                curLen++
-            } else {
-                commit(i)
-                curLen = 0
-                curStart = -1
-            }
-        }
-        commit(idList.size)
-
-        return bestStart to bestEnd
-    }
-}
-
-
-class ChatRepositoryImpl(
-    private val dao: ChatDao
-) : ChatRepository {
-
-    override suspend fun postProcessReset(
-        roomName: String,
-        insertedIds: List<Long>,
-        entities: List<ChatEntity>
-    ) {
-        val now = System.currentTimeMillis()
-
-        for (i in insertedIds.indices) {
-            val id = insertedIds[i]
-
-            dao.updateWatchedAndDate(id, now, entities[i].messageDate)
-
-            if (i > 0) {
-                dao.setPrevIfNull(id, insertedIds[i - 1])
-            }
-            if (i < insertedIds.lastIndex) {
-                dao.setNextIfNull(id, insertedIds[i + 1])
-            }
-        }
-    }
-
-    override suspend fun postProcessAllMatched(
-        roomName: String,
-        matchedIds: List<Long>,
-        entities: List<ChatEntity>
-    ) {
-        val now = System.currentTimeMillis()
-
-        for (i in matchedIds.indices) {
-            dao.updateWatchedAndDate(
-                id = matchedIds[i],
-                now = now,
-                incomingDate = entities[i].messageDate
-            )
-        }
-    }
-
-    override suspend fun postProcessMixed(
-        roomName: String,
-        resolvedIds: List<Long>,
-        entities: List<ChatEntity>
-    ) {
-        val now = System.currentTimeMillis()
-
-        for (i in resolvedIds.indices) {
-            val id = resolvedIds[i]
-
-            dao.updateWatchedAndDate(id, now, entities[i].messageDate)
-
-            if (i > 0) {
-                dao.setPrevIfNull(id, resolvedIds[i - 1])
-            }
-            if (i < resolvedIds.lastIndex) {
-                dao.setNextIfNull(id, resolvedIds[i + 1])
-            }
-        }
-    }
-}
-
-interface ChatDao {
-    suspend fun updateWatchedAndDate(id: Long, now: Long, incomingDate: Long?)
-    suspend fun setPrevIfNull(id: Long, prevId: Long)
-    suspend fun setNextIfNull(id: Long, nextId: Long)
 }
