@@ -1,9 +1,30 @@
-<resources>
-    <style name="Theme.Guide.Translucent" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="android:windowIsTranslucent">true</item>
-        <item name="android:windowBackground">@android:color/transparent</item>
-        <item name="android:backgroundDimEnabled">false</item>
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@android:color/transparent</item>
-    </style>
-</resources>
+import android.os.Build
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import coil.ImageLoader
+import coil.compose.AsyncImage
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
+
+@Composable
+fun AnimatedRocky(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+
+    val imageLoader = ImageLoader.Builder(context)
+        .components {
+            if (Build.VERSION.SDK_INT >= 28) {
+                add(ImageDecoderDecoder.Factory())
+            } else {
+                add(GifDecoder.Factory())
+            }
+        }
+        .build()
+
+    AsyncImage(
+        model = com.example.lockguide.R.drawable.rocky, // rocky.gif
+        imageLoader = imageLoader,
+        contentDescription = "Rocky",
+        modifier = modifier
+    )
+}
