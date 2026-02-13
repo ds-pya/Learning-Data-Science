@@ -1,66 +1,176 @@
-package com.example.lockguide.scenario
+package com.example.lockguide.ui
 
-object ScenarioRegistry {
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Divider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.lockguide.scenario.Scenario
+import com.example.lockguide.scenario.ScenarioOption
+import kotlinx.coroutines.delay
 
-    // POC: 여기만 늘려가면 됨
-    val scenarios: List<Scenario> = listOf(
-        Scenario(
-            id = "schedule_depart",
-            tag = ScenarioTag.SCHEDULE,
-            notiTitle = "강남역 18:00 약속",
-            notiText = "지금 출발하면 35분 예상",
-            guideTitle = "강남역 18:00 약속!",
-            guideSubtitle = "지금 출발하면 35분 정도야. 어떻게 갈까?",
-            options = listOf(
-                ScenarioOption("naver_transit", "🚇", "대중교통", "네이버지도에서 검색",),
-                ScenarioOption("tmap_car", "🚗", "자차", "T map에서 검색",),
-                ScenarioOption("kakaot_taxi", "🚕", "택시", "카카오T에서 검색",),
-            )
-        ),
-        Scenario(
-            id = "todo_grocery",
-            tag = ScenarioTag.TODO,
-            notiTitle = "장보기 할 일",
-            notiText = "마트 근처야. 필요한 거 사갈까?",
-            guideTitle = "마트 근처야!",
-            guideSubtitle = "휴지랑 고무장갑 사오는 거 기억나? 지금 처리할까?",
-            options = listOf(
-                ScenarioOption("open_checklist", "🛒", "목록 보기", "휴지/고무장갑 체크"),
-                ScenarioOption("search_mart_naver", "📍", "마트 검색", "네이버지도에서 주변 마트"),
-                ScenarioOption("snooze_30m", "⏰", "30분 뒤", "잠시 뒤 다시 알려줘"),
-                ScenarioOption("dismiss_today", "🙈", "오늘은 패스", "오늘은 추천 안 받기"),
-            )
-        ),
-        Scenario(
-            id = "pattern_workout",
-            tag = ScenarioTag.PATTERN,
-            notiTitle = "운동 루틴",
-            notiText = "오늘 운동 가는 날일 수 있어",
-            guideTitle = "운동 갈 시간!",
-            guideSubtitle = "오늘도 루틴 이어갈까?",
-            options = listOf(
-                ScenarioOption("naver_gym_search", "📍", "헬스장 검색", "네이버지도에서 헬스장"),
-                ScenarioOption("open_health_app", "💪", "운동 앱", "삼성헬스/스트라바 등"),
-                ScenarioOption("rest_today", "🛌", "오늘은 쉬기", "루틴 예외로 기록"),
-            )
-        ),
-        Scenario(
-            id = "pref_golf",
-            tag = ScenarioTag.PREFERENCE,
-            notiTitle = "골프 관심",
-            notiText = "어제 골프 영상 오래 봤어",
-            guideTitle = "골프 모드로 갈까?",
-            guideSubtitle = "어제 본 영상 이어보거나, 근처 스크린골프 찾아볼래?",
-            options = listOf(
-                ScenarioOption("open_youtube_golf", "▶️", "이어보기", "유튜브에서 골프 검색"),
-                ScenarioOption("search_screen_golf", "⛳", "스크린골프", "네이버지도에서 검색"),
-                ScenarioOption("less_like_this", "🤫", "이런 제안 줄이기", "관심도 낮추기"),
-            )
-        )
-    )
+@Composable
+fun GuideScreenDynamic(
+    scenario: Scenario,
+    onOptionClick: (ScenarioOption) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var panelVisible by remember { mutableStateOf(false) }
+    var bubbleVisible by remember { mutableStateOf(false) }
 
-    fun randomScenario(): Scenario = scenarios.random()
+    LaunchedEffect(Unit) {
+        panelVisible = true
+        delay(150)
+        bubbleVisible = true
+    }
 
-    fun findById(id: String?): Scenario? =
-        id?.let { key -> scenarios.firstOrNull { it.id == key } }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Transparent)
+            .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) }
+    ) {
+        // 하단 패널만 사용
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .pointerInput(Unit) { detectTapGestures(onTap = { /* consume */ }) }
+                .padding(bottom = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            AnimatedGuideCharacter(modifier = Modifier.size(168.dp))
+
+            Spacer(Modifier.height(8.dp))
+
+            if (bubbleVisible) {
+                BubbleCard(
+                    title = scenario.guideTitle,
+                    subtitle = scenario.guideSubtitle,
+                    options = scenario.options,
+                    onOptionClick = onOptionClick
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            Text(
+                text = "바깥을 탭하면 닫혀요",
+                color = Color.White.copy(alpha = 0.55f),
+                fontSize = 12.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun BubbleCard(
+    title: String,
+    subtitle: String,
+    options: List<ScenarioOption>,
+    onOptionClick: (ScenarioOption) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = Color.White.copy(alpha = 0.98f),
+        shadowElevation = 8.dp,
+        modifier = Modifier
+            .widthIn(max = 340.dp)
+            .padding(horizontal = 14.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(title, color = Color.Black, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            Spacer(Modifier.height(4.dp))
+            Text(subtitle, color = Color.Black.copy(alpha = 0.80f), fontSize = 14.sp)
+
+            Spacer(Modifier.height(12.dp))
+            Divider(color = Color.Black.copy(alpha = 0.10f))
+            Spacer(Modifier.height(8.dp))
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                options.forEach { opt ->
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color.Black.copy(alpha = 0.04f),
+                        modifier = Modifier
+                            .pointerInput(opt.id) { detectTapGestures(onTap = { onOptionClick(opt) }) }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Text(opt.emoji, fontSize = 18.sp)
+                            Column(modifier = Modifier.padding(start = 10.dp).weight(1f)) {
+                                Text(opt.title, color = Color.Black, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                                Text(opt.desc, color = Color.Black.copy(alpha = 0.65f), fontSize = 12.sp)
+                            }
+                            Text("›", color = Color.Black.copy(alpha = 0.35f), fontSize = 20.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+package com.example.lockguide.launch
+
+import android.content.Context
+import com.example.lockguide.launch.actions.ExternalSearchIntents
+
+object ActionRouter {
+
+    fun handle(ctx: Context, scenarioId: String, optionId: String) {
+        when (scenarioId) {
+            "schedule_depart" -> handleSchedule(ctx, optionId)
+            "todo_grocery" -> handleTodo(ctx, optionId)
+            "pattern_workout" -> handlePattern(ctx, optionId)
+            "pref_golf" -> handlePreference(ctx, optionId)
+            else -> {}
+        }
+    }
+
+    private fun handleSchedule(ctx: Context, optionId: String) {
+        val query = "강남역" // POC 고정
+        when (optionId) {
+            "naver_transit" -> ExternalSearchIntents.openNaverMapSearch(ctx, query)
+            "tmap_car" -> ExternalSearchIntents.openTmapSearch(ctx, query)
+            "kakaot_taxi" -> ExternalSearchIntents.openKakaoTSearch(ctx, query)
+        }
+    }
+
+    private fun handleTodo(ctx: Context, optionId: String) {
+        when (optionId) {
+            "open_checklist" -> { /* 앱 내부 체크리스트 화면 */ }
+            "search_mart_naver" -> ExternalSearchIntents.openNaverMapSearch(ctx, "마트")
+            "snooze_30m" -> { /* 30분 뒤 다시 노티(automation/AlarmManager) */ }
+            "dismiss_today" -> { /* 오늘은 추천 줄이기 */ }
+        }
+    }
+
+    private fun handlePattern(ctx: Context, optionId: String) {
+        when (optionId) {
+            "naver_gym_search" -> ExternalSearchIntents.openNaverMapSearch(ctx, "헬스장")
+            "open_health_app" -> { /* 삼성헬스 등 실행 */ }
+            "rest_today" -> { /* 예외 기록 */ }
+        }
+    }
+
+    private fun handlePreference(ctx: Context, optionId: String) {
+        when (optionId) {
+            "open_youtube_golf" -> { /* 유튜브 검색 Intent */ }
+            "search_screen_golf" -> ExternalSearchIntents.openNaverMapSearch(ctx, "스크린골프")
+            "less_like_this" -> { /* 관심도 감소 */ }
+        }
+    }
 }
