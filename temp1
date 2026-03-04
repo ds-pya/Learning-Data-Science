@@ -1,176 +1,67 @@
-package com.example.lockguide.ui
+import android.os.Environment
+import android.view.accessibility.AccessibilityNodeInfo
+import java.io.File
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Divider
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.example.lockguide.scenario.Scenario
-import com.example.lockguide.scenario.ScenarioOption
-import kotlinx.coroutines.delay
+/**
+ * 활성화된 윈도우의 루트 노드를 받아 계층 구조를 텍스트 파일로 저장합니다.
+ * @param rootNode accessibilityService.rootInActiveWindow 값
+ */
+fun dumpWindowHierarchyToDownloads(rootNode: AccessibilityNodeInfo?) {
+    if (rootNode == null) return
 
-@Composable
-fun GuideScreenDynamic(
-    scenario: Scenario,
-    onOptionClick: (ScenarioOption) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var panelVisible by remember { mutableStateOf(false) }
-    var bubbleVisible by remember { mutableStateOf(false) }
+    val stringBuilder = StringBuilder()
+    
+    // 1. 재귀 함수를 통해 노드 트리를 String으로 구성
+    buildNodeHierarchyString(rootNode, 0, stringBuilder)
 
-    LaunchedEffect(Unit) {
-        panelVisible = true
-        delay(150)
-        bubbleVisible = true
+    // 2. 외부 저장소의 Downloads 폴더 경로 지정
+    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+    
+    // 폴더가 없다면 생성
+    if (!downloadsDir.exists()) {
+        downloadsDir.mkdirs()
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Transparent)
-            .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) }
-    ) {
-        // 하단 패널만 사용
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .pointerInput(Unit) { detectTapGestures(onTap = { /* consume */ }) }
-                .padding(bottom = 6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            AnimatedGuideCharacter(modifier = Modifier.size(168.dp))
+    val dumpFile = File(downloadsDir, "accessibility_node_dump.txt")
 
-            Spacer(Modifier.height(8.dp))
-
-            if (bubbleVisible) {
-                BubbleCard(
-                    title = scenario.guideTitle,
-                    subtitle = scenario.guideSubtitle,
-                    options = scenario.options,
-                    onOptionClick = onOptionClick
-                )
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            Text(
-                text = "바깥을 탭하면 닫혀요",
-                color = Color.White.copy(alpha = 0.55f),
-                fontSize = 12.sp
-            )
-        }
+    // 3. 파일에 덮어쓰기 (writeText는 내부적으로 덮어쓰기로 동작합니다)
+    try {
+        dumpFile.writeText(stringBuilder.toString())
+    } catch (e: Exception) {
+        e.printStackTrace()
+        // 파일 쓰기 권한이 없거나 IO 오류가 발생한 경우 처리
     }
 }
 
-@Composable
-private fun BubbleCard(
-    title: String,
-    subtitle: String,
-    options: List<ScenarioOption>,
-    onOptionClick: (ScenarioOption) -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = Color.White.copy(alpha = 0.98f),
-        shadowElevation = 8.dp,
-        modifier = Modifier
-            .widthIn(max = 340.dp)
-            .padding(horizontal = 14.dp)
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text(title, color = Color.Black, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-            Spacer(Modifier.height(4.dp))
-            Text(subtitle, color = Color.Black.copy(alpha = 0.80f), fontSize = 14.sp)
+/**
+ * 노드를 순회하며 StringBuilder에 기록하는 재귀 함수
+ */
+private fun buildNodeHierarchyString(node: AccessibilityNodeInfo, depth: Int, sb: StringBuilder) {
+    // 들여쓰기 (depth 1당 공백 4칸)
+    val indent = "    ".repeat(depth)
+    
+    // 각 노드의 주요 정보 추출 (줄바꿈이 포함되어 있으면 한 줄 표현이 깨지므로 공백으로 치환)
+    val className = node.className ?: "UnknownClass"
+    val text = node.text?.toString()?.replace("\n", " ") ?: ""
+    val contentDesc = node.contentDescription?.toString()?.replace("\n", " ") ?: ""
+    val viewId = node.viewIdResourceName ?: ""
 
-            Spacer(Modifier.height(12.dp))
-            Divider(color = Color.Black.copy(alpha = 0.10f))
-            Spacer(Modifier.height(8.dp))
+    // 한 줄로 정보 조합
+    sb.append("$indent- [$className]")
+    if (text.isNotEmpty()) sb.append(" text: \"$text\"")
+    if (contentDesc.isNotEmpty()) sb.append(" desc: \"$contentDesc\"")
+    if (viewId.isNotEmpty()) sb.append(" id: \"$viewId\"")
+    
+    sb.appendLine() // 줄바꿈
 
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                options.forEach { opt ->
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color.Black.copy(alpha = 0.04f),
-                        modifier = Modifier
-                            .pointerInput(opt.id) { detectTapGestures(onTap = { onOptionClick(opt) }) }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                        ) {
-                            Text(opt.emoji, fontSize = 18.sp)
-                            Column(modifier = Modifier.padding(start = 10.dp).weight(1f)) {
-                                Text(opt.title, color = Color.Black, fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                                Text(opt.desc, color = Color.Black.copy(alpha = 0.65f), fontSize = 12.sp)
-                            }
-                            Text("›", color = Color.Black.copy(alpha = 0.35f), fontSize = 20.sp)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-package com.example.lockguide.launch
-
-import android.content.Context
-import com.example.lockguide.launch.actions.ExternalSearchIntents
-
-object ActionRouter {
-
-    fun handle(ctx: Context, scenarioId: String, optionId: String) {
-        when (scenarioId) {
-            "schedule_depart" -> handleSchedule(ctx, optionId)
-            "todo_grocery" -> handleTodo(ctx, optionId)
-            "pattern_workout" -> handlePattern(ctx, optionId)
-            "pref_golf" -> handlePreference(ctx, optionId)
-            else -> {}
-        }
-    }
-
-    private fun handleSchedule(ctx: Context, optionId: String) {
-        val query = "강남역" // POC 고정
-        when (optionId) {
-            "naver_transit" -> ExternalSearchIntents.openNaverMapSearch(ctx, query)
-            "tmap_car" -> ExternalSearchIntents.openTmapSearch(ctx, query)
-            "kakaot_taxi" -> ExternalSearchIntents.openKakaoTSearch(ctx, query)
-        }
-    }
-
-    private fun handleTodo(ctx: Context, optionId: String) {
-        when (optionId) {
-            "open_checklist" -> { /* 앱 내부 체크리스트 화면 */ }
-            "search_mart_naver" -> ExternalSearchIntents.openNaverMapSearch(ctx, "마트")
-            "snooze_30m" -> { /* 30분 뒤 다시 노티(automation/AlarmManager) */ }
-            "dismiss_today" -> { /* 오늘은 추천 줄이기 */ }
-        }
-    }
-
-    private fun handlePattern(ctx: Context, optionId: String) {
-        when (optionId) {
-            "naver_gym_search" -> ExternalSearchIntents.openNaverMapSearch(ctx, "헬스장")
-            "open_health_app" -> { /* 삼성헬스 등 실행 */ }
-            "rest_today" -> { /* 예외 기록 */ }
-        }
-    }
-
-    private fun handlePreference(ctx: Context, optionId: String) {
-        when (optionId) {
-            "open_youtube_golf" -> { /* 유튜브 검색 Intent */ }
-            "search_screen_golf" -> ExternalSearchIntents.openNaverMapSearch(ctx, "스크린골프")
-            "less_like_this" -> { /* 관심도 감소 */ }
+    // 자식 노드 순회
+    for (i in 0 until node.childCount) {
+        val childNode = node.getChild(i)
+        if (childNode != null) {
+            buildNodeHierarchyString(childNode, depth + 1, sb)
+            
+            // 메모리 누수 방지를 위해 얻어온 자식 노드 재활용(recycle)
+            childNode.recycle()
         }
     }
 }
