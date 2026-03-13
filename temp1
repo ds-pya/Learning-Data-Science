@@ -1,67 +1,30 @@
-import android.os.Environment
-import android.view.accessibility.AccessibilityNodeInfo
-import java.io.File
+when (cursor.getType(i)) {
+    Cursor.FIELD_TYPE_STRING -> {
+        val columnName = cursor.getColumnName(i)
+        val rawValue = cursor.getString(i)
 
-/**
- * 활성화된 윈도우의 루트 노드를 받아 계층 구조를 텍스트 파일로 저장합니다.
- * @param rootNode accessibilityService.rootInActiveWindow 값
- */
-fun dumpWindowHierarchyToDownloads(rootNode: AccessibilityNodeInfo?) {
-    if (rootNode == null) return
-
-    val stringBuilder = StringBuilder()
-    
-    // 1. 재귀 함수를 통해 노드 트리를 String으로 구성
-    buildNodeHierarchyString(rootNode, 0, stringBuilder)
-
-    // 2. 외부 저장소의 Downloads 폴더 경로 지정
-    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-    
-    // 폴더가 없다면 생성
-    if (!downloadsDir.exists()) {
-        downloadsDir.mkdirs()
-    }
-
-    val dumpFile = File(downloadsDir, "accessibility_node_dump.txt")
-
-    // 3. 파일에 덮어쓰기 (writeText는 내부적으로 덮어쓰기로 동작합니다)
-    try {
-        dumpFile.writeText(stringBuilder.toString())
-    } catch (e: Exception) {
-        e.printStackTrace()
-        // 파일 쓰기 권한이 없거나 IO 오류가 발생한 경우 처리
-    }
-}
-
-/**
- * 노드를 순회하며 StringBuilder에 기록하는 재귀 함수
- */
-private fun buildNodeHierarchyString(node: AccessibilityNodeInfo, depth: Int, sb: StringBuilder) {
-    // 들여쓰기 (depth 1당 공백 4칸)
-    val indent = "    ".repeat(depth)
-    
-    // 각 노드의 주요 정보 추출 (줄바꿈이 포함되어 있으면 한 줄 표현이 깨지므로 공백으로 치환)
-    val className = node.className ?: "UnknownClass"
-    val text = node.text?.toString()?.replace("\n", " ") ?: ""
-    val contentDesc = node.contentDescription?.toString()?.replace("\n", " ") ?: ""
-    val viewId = node.viewIdResourceName ?: ""
-
-    // 한 줄로 정보 조합
-    sb.append("$indent- [$className]")
-    if (text.isNotEmpty()) sb.append(" text: \"$text\"")
-    if (contentDesc.isNotEmpty()) sb.append(" desc: \"$contentDesc\"")
-    if (viewId.isNotEmpty()) sb.append(" id: \"$viewId\"")
-    
-    sb.appendLine() // 줄바꿈
-
-    // 자식 노드 순회
-    for (i in 0 until node.childCount) {
-        val childNode = node.getChild(i)
-        if (childNode != null) {
-            buildNodeHierarchyString(childNode, depth + 1, sb)
-            
-            // 메모리 누수 방지를 위해 얻어온 자식 노드 재활용(recycle)
-            childNode.recycle()
+        if (rawValue == null) {
+            jsonObject.put(columnName, JSONObject.NULL)
+        } else {
+            val trimmed = rawValue.trim()
+            try {
+                // 1. JSON Array 형태 (List<DataClass> 등) 감지
+                if (trimmed.startsWith("[")) {
+                    jsonObject.put(columnName, JSONArray(trimmed))
+                } 
+                // 2. JSON Object 형태 (Custom Data Class 등) 감지
+                else if (trimmed.startsWith("{")) {
+                    jsonObject.put(columnName, JSONObject(trimmed))
+                } 
+                // 3. 일반 문자열 (URL, 경로 등 포함)
+                else {
+                    jsonObject.put(columnName, rawValue)
+                }
+            } catch (e: Exception) {
+                // 파싱 에러 시(형식만 [ ]이고 실제론 JSON이 아닐 때) 안전하게 String으로 삽입
+                jsonObject.put(columnName, rawValue)
+            }
         }
     }
+    // Cursor.FIELD_TYPE_INTEGER -> { ... }
 }
