@@ -1,54 +1,66 @@
-# Ubuntu 20.04를 베이스 이미지로 사용
-FROM ubuntu:20.04
+flowchart TB
+    User[User / Conversation]
 
-# 환경 변수 설정
-ENV DEBIAN_FRONTEND=noninteractive
+    subgraph Extract[Extraction Pipeline]
+        E1[1. Extract facts]
+        E2[2. Semantic dedup]
+        E3[3. Categorize]
+        E1 --> E2 --> E3
+    end
 
-# 기본적인 도구 설치
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        wget \
-        ca-certificates \
-        curl \
-        git \
-        openjdk-11-jdk \
-        python3.9 \
-        python3-pip \
-        python3.9-dev
+    subgraph L1[Layer 1: PocketMem - SQLite]
+        DB[(memory.db)]
+        Schema["key, content, category,<br/>importance, access_count,<br/>created_at, accessed_at"]
+        Hybrid[Hybrid Retriever<br/>keyword + sqlite-vec]
+        DB --- Schema
+        DB --> Hybrid
+    end
 
-# Python 3.9를 기본 Python으로 설정
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.9 1 && \
-    update-alternatives --set python /usr/bin/python3.9 && \
-    update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+    subgraph Dream[Consolidation Engine - Dreaming]
+        Light[Light Phase<br/>scan daily notes]
+        Deep[Deep Phase<br/>promote by importance]
+        Rem[REM Phase<br/>decay by access freq]
+        Light --> Deep --> Rem
+    end
 
-# TensorFlow GPU를 설치하기 위한 CUDA 및 cuDNN 설정 (예시는 CUDA 11.2 및 cuDNN 8에 대한 것임)
-# TensorFlow의 호환 버전에 맞춰 CUDA와 cuDNN 버전을 조정해야 할 수도 있습니다.
-RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-ubuntu2004.pin && \
-    mv cuda-ubuntu2004.pin /etc/apt/preferences.d/cuda-repository-pin-600 && \
-    wget https://developer.download.nvidia.com/compute/cuda/11.2.2/local_installers/cuda-repo-ubuntu2004-11-2-local_11.2.2-460.32.03-1_amd64.deb && \
-    dpkg -i cuda-repo-ubuntu2004-11-2-local_11.2.2-460.32.03-1_amd64.deb && \
-    apt-key add /var/cuda-repo-ubuntu2004-11-2-local/7fa2af80.pub && \
-    apt-get update && \
-    apt-get -y install cuda
+    subgraph L2[Layer 2: MEMORY.md]
+        MD[MEMORY.md<br/>curated long-term knowledge]
+    end
 
-# Spark 설치
-ARG SPARK_VERSION=3.0.0
-ARG HADOOP_VERSION=2.7
-RUN wget --no-verbose https://downloads.apache.org/spark/spark-$SPARK_VERSION/spark-$SPARK_VERSION-bin-hadoop$HADOOP_VERSION.tgz && \
-    tar -xzf spark-$SPARK_VERSION-bin-hadoop$HADOOP_VERSION.tgz -C /opt && \
-    mv /opt/spark-$SPARK_VERSION-bin-hadoop$HADOOP_VERSION /opt/spark
+    User --> Extract
+    Extract --> DB
+    Hybrid -.retrieval.-> User
+    DB --> Dream
+    Dream --> MD
+    MD -.context injection.-> User
 
-# 환경 변수에 Spark 추가
-ENV SPARK_HOME=/opt/spark
-ENV PATH=$PATH:$SPARK_HOME/bin:$SPARK_HOME/sbin
 
-# requirement.txt 파일을 도커 이미지로 복사
-COPY requirement.txt /tmp/
+flowchart LR
+    subgraph Normal[Typical Agent OpenClaw default]
+        direction TB
+        A1[Conversation]
+        A2{Agent judges<br/>worth remembering?}
+        A3[Agent writes<br/>directly to MEMORY.md]
+        A4[MEMORY.md]
+        A1 --> A2
+        A2 -->|yes| A3
+        A2 -->|no| A1
+        A3 --> A4
+    end
 
-# requirement.txt에 정의된 파이썬 라이브러리 설치
-RUN pip install --no-cache-dir -r /tmp/requirement.txt
+    subgraph Tini[tiniclaw]
+        direction TB
+        B1[Conversation]
+        B2[Extract to DB<br/>always]
+        B3[(PocketMem<br/>SQLite)]
+        B4[Consolidation engine<br/>periodic, automatic]
+        B5{Importance<br/>+ Access count<br/>+ Recency}
+        B6[MEMORY.md]
+        B1 --> B2 --> B3
+        B3 --> B4 --> B5
+        B5 -->|pass threshold| B6
+        B5 -->|fail| B3
+    end
 
-# 포트 설정 (필요에 따라 수정)
-EXPOSE 8888 4040
-
-# 시작 명령어 설정 (필요에 따라 변경)
-CMD ["/bin/bash"]
+    style A3 fill:#ffe6e6
+    style B4 fill:#e6f7ff
