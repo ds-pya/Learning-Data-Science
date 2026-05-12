@@ -1,30 +1,29 @@
-when (cursor.getType(i)) {
-    Cursor.FIELD_TYPE_STRING -> {
-        val columnName = cursor.getColumnName(i)
-        val rawValue = cursor.getString(i)
+import android.content.ContentValues
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 
-        if (rawValue == null) {
-            jsonObject.put(columnName, JSONObject.NULL)
-        } else {
-            val trimmed = rawValue.trim()
-            try {
-                // 1. JSON Array 형태 (List<DataClass> 등) 감지
-                if (trimmed.startsWith("[")) {
-                    jsonObject.put(columnName, JSONArray(trimmed))
-                } 
-                // 2. JSON Object 형태 (Custom Data Class 등) 감지
-                else if (trimmed.startsWith("{")) {
-                    jsonObject.put(columnName, JSONObject(trimmed))
-                } 
-                // 3. 일반 문자열 (URL, 경로 등 포함)
-                else {
-                    jsonObject.put(columnName, rawValue)
-                }
-            } catch (e: Exception) {
-                // 파싱 에러 시(형식만 [ ]이고 실제론 JSON이 아닐 때) 안전하게 String으로 삽입
-                jsonObject.put(columnName, rawValue)
+fun saveToDownloads(context: Context, fileName: String, content: String) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+        }
+        val uri = context.contentResolver.insert(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+        )
+        uri?.let {
+            context.contentResolver.openOutputStream(it)?.use { os ->
+                os.write(content.toByteArray(Charsets.UTF_8))
             }
         }
+    } else {
+        // Android 9 이하
+        val downloads = Environment.getExternalStoragePublicDirectory(
+            Environment.DIRECTORY_DOWNLOADS
+        )
+        val file = java.io.File(downloads, fileName)
+        file.writeText(content, Charsets.UTF_8)
     }
-    // Cursor.FIELD_TYPE_INTEGER -> { ... }
 }
