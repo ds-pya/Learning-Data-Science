@@ -1,29 +1,88 @@
-import android.content.ContentValues
-import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 
-fun saveToDownloads(context: Context, fileName: String, content: String) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-            put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+/**
+ * 메모리 기반 쿠키 저장소.
+ * 첫 요청에서 Bing이 내려준 Set-Cookie를 보관했다가
+ * 이후 요청에 자동으로 다시 실어 보낸다 (세션 없는 봇으로 안 보이게).
+ */
+class InMemoryCookieJar : CookieJar {
+    private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
+
+    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+        store[url.host] = cookies.toMutableList()
+    }
+
+    override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        return store[url.host] ?: emptyList()
+    }
+}
+
+class BingSearch {
+
+    private val client = OkHttpClient.Builder()
+        .cookieJar(InMemoryCookieJar())   // 쿠키 자동 저장/전송
+        .followRedirects(true)
+        .build()
+
+    // 브라우저처럼 보이게 하는 공통 헤더
+    private fun browserHeaders(builder: Request.Builder) {
+        builder
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            .header(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9," +
+                    "image/avif,image/webp,*/*;q=0.8"
+            )
+            .header("Accept-Language", "ko-KR,ko;q=0.9,en;q=0.8")
+            .header("Referer", "https://www.bing.com/")
+    }
+
+    /**
+     * 1) 먼저 bing.com 메인에 접속해 쿠키(Set-Cookie) 확보
+     * 2) 그 쿠키를 들고 검색 요청 → 정상 결과 페이지 수신
+     */
+    fun search(query: String): String {
+        warmUp()                       // 세션 쿠키 받기
+        return fetchResults(query)
+    }
+
+    private fun warmUp() {
+        val req = Request.Builder()
+            .url("https://www.bing.com/")
+            .also { browserHeaders(it) }
+            .build()
+
+        client.newCall(req).execute().use { resp ->
+            // 본문은 버리고 쿠키만 CookieJar에 저장됨
+            resp.body?.close()
         }
-        val uri = context.contentResolver.insert(
-            MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
-        )
-        uri?.let {
-            context.contentResolver.openOutputStream(it)?.use { os ->
-                os.write(content.toByteArray(Charsets.UTF_8))
+    }
+
+    private fun fetchResults(query: String): String {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        val url = "https://www.bing.com/search" +
+            "?q=$encoded&mkt=ko-KR&setlang=ko&cc=KR"
+
+        val req = Request.Builder()
+            .url(url)
+            .also { browserHeaders(it) }
+            .build()
+
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                throw RuntimeException("Bing 검색 실패: HTTP ${resp.code}")
             }
+            return resp.body?.string() ?: ""
         }
-    } else {
-        // Android 9 이하
-        val downloads = Environment.getExternalStoragePublicDirectory(
-            Environment.DIRECTORY_DOWNLOADS
-        )
-        val file = java.io.File(downloads, fileName)
-        file.writeText(content, Charsets.UTF_8)
     }
 }
