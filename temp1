@@ -1,1 +1,325 @@
-sudo apt install libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xkb1 libxkbcommon-x11-0
+import android.graphics.Rect
+import android.view.accessibility.AccessibilityNodeInfo
+
+// ──────────────────────────────────────────────
+// Data Models
+// ──────────────────────────────────────────────
+
+enum class NodeRole {
+    SCREEN_TITLE,
+    SECTION_HEADER,
+    LIST_ITEM,
+    BODY_TEXT,
+    ACTION_BUTTON,
+    INPUT_FIELD,
+    STATUS_TEXT,
+    IGNORED
+}
+
+data class ParsedNode(
+    val role: NodeRole,
+    val text: String,
+    val depth: Int,
+    val children: List<ParsedNode>
+)
+
+// ──────────────────────────────────────────────
+// 1. NodeFilter — 노이즈 제거
+// ──────────────────────────────────────────────
+
+/** 상태바/네비게이션바 영역 노드 여부 판단 (화면 상단 56dp, 하단 80dp 이내) */
+fun isSystemBar(node: AccessibilityNodeInfo, screenHeight: Int): Boolean {
+    val bounds = Rect()
+    node.getBoundsInScreen(bounds)
+    val topThreshold = (screenHeight * 0.08f).toInt()   // 상단 약 8%
+    val bottomThreshold = (screenHeight * 0.90f).toInt() // 하단 약 10%
+    val isAtTop = bounds.bottom <= topThreshold
+    val isAtBottom = bounds.top >= bottomThreshold
+    val hasNoText = collectRawText(node).isBlank()
+    return (isAtTop || isAtBottom) && hasNoText
+}
+
+/** 확인/취소/닫기 등 반복 boilerplate 액션 버튼 여부 */
+fun isBoilerplateAction(node: AccessibilityNodeInfo): Boolean {
+    val boilerplateKeywords = setOf(
+        "확인", "취소", "닫기", "설정", "ok", "cancel", "close", "dismiss",
+        "done", "back", "이전", "다음", "next", "skip", "나중에", "허용", "거부",
+        "allow", "deny", "agree", "disagree", "yes", "no", "더보기"
+    )
+    if (!node.isClickable) return false
+    val text = collectRawText(node).trim().lowercase()
+    return text.isNotBlank() && text.length <= 10 && boilerplateKeywords.any { text.contains(it) }
+}
+
+/** contentDescription도 없는 순수 장식용 노드 여부 */
+fun isDecorativeNode(node: AccessibilityNodeInfo): Boolean {
+    val hasText = collectRawText(node).isNotBlank()
+    val hasContentDesc = !node.contentDescription.isNullOrBlank()
+    val isImage = node.className?.contains("Image") == true
+    return isImage && !hasText && !hasContentDesc
+}
+
+/** 텍스트 없는 비-scrollable 컨테이너 여부 */
+fun isEmptyContainer(node: AccessibilityNodeInfo): Boolean {
+    val isLayout = node.className?.let {
+        it.contains("Layout") || it.contains("ViewGroup") || it.contains("FrameLayout")
+                || it.contains("LinearLayout") || it.contains("RelativeLayout")
+                || it.contains("ConstraintLayout")
+    } ?: false
+    if (!isLayout) return false
+    if (node.isScrollable) return false
+    return collectRawText(node).isBlank()
+}
+
+/** 위 필터들을 종합해 제거 대상 노드인지 판단 */
+fun shouldFilterOut(node: AccessibilityNodeInfo, screenHeight: Int): Boolean {
+    return isSystemBar(node, screenHeight)
+            || isDecorativeNode(node)
+            || isBoilerplateAction(node)
+            || isEmptyContainer(node)
+}
+
+// ──────────────────────────────────────────────
+// 2. NodeClassifier — 역할 분류
+// ──────────────────────────────────────────────
+
+/** 클래스명 기반 1차 분류 */
+fun classifyByClassName(node: AccessibilityNodeInfo): NodeRole? {
+    val cls = node.className?.toString() ?: return null
+    return when {
+        cls.contains("EditText") -> NodeRole.INPUT_FIELD
+        cls.contains("Button") -> NodeRole.ACTION_BUTTON
+        cls.contains("CheckBox") || cls.contains("RadioButton") || cls.contains("Switch")
+            -> NodeRole.ACTION_BUTTON
+        else -> null
+    }
+}
+
+/** 트리 깊이 기반 분류 힌트 (얕을수록 타이틀/헤더 가능성) */
+fun classifyByDepth(depth: Int): NodeRole? {
+    return when (depth) {
+        0, 1 -> NodeRole.SCREEN_TITLE
+        2, 3 -> NodeRole.SECTION_HEADER
+        else -> null
+    }
+}
+
+/** 형제 노드들과 구조가 유사하면 LIST_ITEM */
+fun classifyByRepetition(node: AccessibilityNodeInfo, siblings: List<AccessibilityNodeInfo>): NodeRole? {
+    if (siblings.size < 2) return null
+    val sameClass = siblings.count { it.className == node.className }
+    val similarChildCount = siblings.count { it.childCount == node.childCount }
+    return if (sameClass >= 2 && similarChildCount >= 2) NodeRole.LIST_ITEM else null
+}
+
+/** y좌표 비율로 상단 타이틀 영역 여부 판단 */
+fun classifyByBounds(node: AccessibilityNodeInfo, screenHeight: Int): NodeRole? {
+    val bounds = Rect()
+    node.getBoundsInScreen(bounds)
+    val yRatio = bounds.centerY().toFloat() / screenHeight
+    return when {
+        yRatio < 0.15f -> NodeRole.SCREEN_TITLE
+        yRatio < 0.30f -> NodeRole.SECTION_HEADER
+        else -> null
+    }
+}
+
+/** 위 분류기를 우선순위대로 조합해 최종 NodeRole 결정 */
+fun classifyNode(
+    node: AccessibilityNodeInfo,
+    depth: Int,
+    siblings: List<AccessibilityNodeInfo>,
+    screenHeight: Int
+): NodeRole {
+    // 1순위: 클래스명 (가장 명시적)
+    classifyByClassName(node)?.let { return it }
+    // 2순위: 반복 패턴 (LIST_ITEM)
+    classifyByRepetition(node, siblings)?.let { return it }
+    // 3순위: bounds y좌표
+    classifyByBounds(node, screenHeight)?.let { return it }
+    // 4순위: 트리 깊이
+    classifyByDepth(depth)?.let { return it }
+    // 기본: BODY_TEXT
+    return NodeRole.BODY_TEXT
+}
+
+// ──────────────────────────────────────────────
+// 3. NodeTreeParser — 트리 순회 및 ParsedNode 생성
+// ──────────────────────────────────────────────
+
+/** 노드의 text + contentDescription을 수집 (null-safe) */
+fun collectRawText(node: AccessibilityNodeInfo): String {
+    val text = node.text?.toString()?.trim() ?: ""
+    val desc = node.contentDescription?.toString()?.trim() ?: ""
+    return when {
+        text.isNotBlank() -> text
+        desc.isNotBlank() -> desc
+        else -> ""
+    }
+}
+
+/**
+ * 부모가 이미 자식 텍스트를 합산하고 있는지 확인.
+ * 부모 텍스트가 자식 텍스트들을 포함하면 자식 텍스트는 중복이므로 skip.
+ */
+fun isTextRedundantWithParent(node: AccessibilityNodeInfo, parentText: String): Boolean {
+    val nodeText = collectRawText(node)
+    return nodeText.isNotBlank() && parentText.contains(nodeText)
+}
+
+/**
+ * 자식이 하나뿐인 컨테이너를 flatten — 불필요한 depth 제거.
+ * 반환: 실제 콘텐츠를 가진 대표 노드
+ */
+fun pruneRedundantContainers(node: AccessibilityNodeInfo): AccessibilityNodeInfo {
+    var current = node
+    while (current.childCount == 1 && collectRawText(current).isBlank()) {
+        current = current.getChild(0) ?: break
+    }
+    return current
+}
+
+/**
+ * 형제 노드 리스트에서 반복 LIST 패턴을 탐지.
+ * 같은 className + 유사한 childCount 구조가 2개 이상이면 리스트로 판단.
+ */
+fun detectListPatterns(siblings: List<AccessibilityNodeInfo>): Boolean {
+    if (siblings.size < 2) return false
+    val classCounts = siblings.groupBy { it.className }.mapValues { it.value.size }
+    return classCounts.any { it.value >= 2 }
+}
+
+/**
+ * 재귀적으로 트리를 순회하여 ParsedNode 트리를 반환.
+ * @param node 현재 노드
+ * @param depth 현재 깊이
+ * @param parentText 부모의 텍스트 (중복 제거용)
+ * @param screenHeight 화면 높이 (px)
+ */
+fun parseTree(
+    node: AccessibilityNodeInfo,
+    depth: Int = 0,
+    parentText: String = "",
+    screenHeight: Int = 2400
+): ParsedNode? {
+    // 필터링 대상이면 제거
+    if (shouldFilterOut(node, screenHeight)) return null
+
+    val pruned = pruneRedundantContainers(node)
+    val rawText = collectRawText(pruned)
+
+    // 부모와 텍스트 중복이면 이 노드의 텍스트는 빈 것으로 처리
+    val text = if (isTextRedundantWithParent(pruned, parentText)) "" else rawText
+
+    // 자식 노드들 수집
+    val childNodes = (0 until pruned.childCount).mapNotNull { i -> pruned.getChild(i) }
+    val siblings = childNodes // 형제 판단은 같은 부모의 자식들로 처리
+
+    // 자식 ParsedNode 재귀 생성
+    val parsedChildren = childNodes.mapNotNull { child ->
+        parseTree(child, depth + 1, rawText, screenHeight)
+    }
+
+    // 텍스트도 없고 자식도 없으면 의미 없는 노드 → skip
+    if (text.isBlank() && parsedChildren.isEmpty()) return null
+
+    val role = if (text.isBlank()) {
+        NodeRole.IGNORED
+    } else {
+        classifyNode(pruned, depth, siblings, screenHeight)
+    }
+
+    return ParsedNode(role = role, text = text, depth = depth, children = parsedChildren)
+}
+
+// ──────────────────────────────────────────────
+// 4. MarkdownRenderer — ParsedNode → Markdown
+// ──────────────────────────────────────────────
+
+/** SCREEN_TITLE → `# 제목` */
+fun renderTitle(node: ParsedNode): String {
+    return if (node.text.isNotBlank()) "# ${node.text}" else ""
+}
+
+/** SECTION_HEADER → depth에 따라 `##`, `###` */
+fun renderHeader(node: ParsedNode): String {
+    if (node.text.isBlank()) return ""
+    val level = (node.depth + 1).coerceIn(2, 4)
+    return "${"#".repeat(level)} ${node.text}"
+}
+
+/** LIST_ITEM → `- 항목` */
+fun renderListItem(node: ParsedNode): String {
+    return if (node.text.isNotBlank()) "- ${node.text}" else ""
+}
+
+/** STATUS_TEXT → `> 상태 메시지` */
+fun renderBlockquote(node: ParsedNode): String {
+    return if (node.text.isNotBlank()) "> ${node.text}" else ""
+}
+
+/** INPUT_FIELD → `**[입력창]** placeholder` */
+fun renderInputField(node: ParsedNode): String {
+    val label = node.text.ifBlank { "입력" }
+    return "**[입력창]** $label"
+}
+
+/** ACTION_BUTTON → `[버튼: 텍스트]` (필터링 안 된 중요 액션) */
+fun renderActionButton(node: ParsedNode): String {
+    return if (node.text.isNotBlank()) "[버튼: ${node.text}]" else ""
+}
+
+/** BODY_TEXT → 들여쓰기 없이 텍스트 그대로 */
+fun renderBodyText(node: ParsedNode): String {
+    return node.text
+}
+
+/**
+ * ParsedNode 하나를 역할에 따라 마크다운 문자열로 변환.
+ * 자식 노드들은 재귀적으로 처리.
+ */
+fun renderNode(node: ParsedNode, sb: StringBuilder) {
+    val line = when (node.role) {
+        NodeRole.SCREEN_TITLE   -> renderTitle(node)
+        NodeRole.SECTION_HEADER -> renderHeader(node)
+        NodeRole.LIST_ITEM      -> renderListItem(node)
+        NodeRole.STATUS_TEXT    -> renderBlockquote(node)
+        NodeRole.INPUT_FIELD    -> renderInputField(node)
+        NodeRole.ACTION_BUTTON  -> renderActionButton(node)
+        NodeRole.BODY_TEXT      -> renderBodyText(node)
+        NodeRole.IGNORED        -> ""
+    }
+
+    if (line.isNotBlank()) {
+        sb.appendLine(line)
+    }
+
+    // 자식 렌더링
+    for (child in node.children) {
+        renderNode(child, sb)
+    }
+}
+
+/**
+ * 전체 통합 진입점.
+ * AccessibilityNodeInfo (root) → Markdown String
+ *
+ * @param rootNode accessibility root node
+ * @param screenHeight 화면 높이 px (기본 2400)
+ * @return 마크다운 문자열
+ */
+fun convertAccessibilityToMarkdown(
+    rootNode: AccessibilityNodeInfo,
+    screenHeight: Int = 2400
+): String {
+    val parsedTree = parseTree(rootNode, depth = 0, screenHeight = screenHeight)
+        ?: return ""
+
+    val sb = StringBuilder()
+    renderNode(parsedTree, sb)
+
+    // 연속된 빈 줄 정리 (2줄 이상 → 1줄)
+    return sb.toString()
+        .replace(Regex("\n{3,}"), "\n\n")
+        .trim()
+}
