@@ -6,60 +6,29 @@ import javax.inject.Inject
 import kotlin.math.abs
 
 /**
- * Chrome 브라우저 OCR → 구조화 텍스트 변환기
+ * KakaoTalk 대화창 OCR → 구조화 텍스트 변환기
  *
- * ## Chrome 화면 시나리오 및 이상적인 출력 스키마
- *
- * ### A. 블로그/기사 (naver blog 등)
+ * ## 이상적인 출력 스키마
  * ```
- * [Chrome] 웹 페이지
- * URL: m.blog.naver.com/...
- * ────────────────────────────────────────
- * 제목: 일본 벳푸 호텔 추천, 스기노이 호텔 내돈내산 후기
- * 작성자: JINIE HAN
- * 작성일: 2026. 1. 14. 12:20
+ * [KakaoTalk 대화]
+ * ──────────────────────────────────────
+ *   ── 2026년 1월 28일 수요일 ──
  *
- * [본문]
- * 내돈내산으로 숙박한 솔직한 후기
- * 스기노이 호텔 SUGINOI HOTEL
- * 2인기준 숙박 가격 약 30만원 ~ 50만원 ...
- *
- * [반응] 좋아요 32  댓글 2  공유 18
+ * [박선주] 오전 11:08  하성 우리 여행 일정 잡아야돼!!
+ * [나]     오전 11:08  숙박이랑 항공은 우선 내가 결제할게.
+ *                      날짜랑 가격대비 어디가 젤 나은지 봐줘.
+ * [박선주] 오전 11:08  오키, 다른 날짜가 더 쌀 수도 있으니까 비교해볼게.
  * ```
  *
- * ### B. 상품/예약 페이지 (trip.com 등)
- * ```
- * [Chrome] 웹 페이지
- * URL: kr.trip.com/m/hotels/
- * ────────────────────────────────────────
- * 상품명: 벳푸 스기노이 호텔 (오릭스 호텔 & 리조트)
- *
- * [예약 정보]
- * 체크인/아웃: 6월 28일(일) - 6월 30일(화) / 객실 1개 x 2박
- * 객실: 소라 칸 디럭스 룸, 오션 뷰 (46m²)
- * 옵션: 싱글 침대 4개 & 소파침대 1개 / 금연 / 조식 및 석식 포함(2인)
- *
- * [혜택/안내]
- * 무료 취소: 6월 20일 23:59 전
- * 할인: 14,104원
- * 적립: 403 트립코인 (약 6,129원 상당)
- *
- * [입력 정보]
- * 투숙객 / 성* / 이름*
- *   e.g. Smith
- *
- * [결제]
- * 총 금액: 1,223,592원
- * ```
- *
- * ## 핵심 수정 사항
- * 1. deduplicateBlocks: textQualityScore < 0 인 블록은 짝이 없어도 즉시 제거
- * 2. 블로그 isActionButton: "+ 이웃추가" 등 버튼 텍스트 필터 강화
- * 3. 블로그 본문: 중복 오인식 블록(A]o]l 등) dedup 후 score<0 추가 제거
- * 4. 예약 혜택 섹션: 동일 키워드(무료 취소 등) 중복 출력 방지
- * 5. URL cleanUrl: 앞뒤 노이즈 제거 패턴 강화
+ * ## 좌표 기반 발신자 판별 전략
+ * - 내 메시지(노란 말풍선): right edge > sw * 0.60
+ * - 상대 메시지(회색 말풍선): right edge <= sw * 0.60
+ * - 타임스탬프: "오전/오후 HH:MM" 패턴
+ * - 날짜 구분선: "YYYY년 M월 D일 요일" 패턴 + 화면 중앙 배치
+ *   → classifyBlocks에서 DateDivider를 Message보다 먼저 검사
+ * - OCR 오인식 노이즈: textQualityScore < NOISE_SCORE_THRESHOLD 인 블록 제거
  */
-class ChromeOcrTextFormatter @Inject constructor() : OcrTextFormatter {
+class KakaoTalkOcrTextFormatter @Inject constructor() : OcrTextFormatter {
 
     override fun format(
         blocks: List<OcrBlock>,
@@ -67,398 +36,402 @@ class ChromeOcrTextFormatter @Inject constructor() : OcrTextFormatter {
         screenWidth: Int,
         screenHeight: Int
     ): String? {
-        if (packageName != CHROME_PACKAGE && packageName != CHROME_BETA_PACKAGE) return null
+        if (packageName != KAKAO_TALK_PACKAGE) return null
         if (blocks.isEmpty()) return null
 
         val sw = if (screenWidth > 0) screenWidth else estimateScreenWidth(blocks)
         val sh = if (screenHeight > 0) screenHeight else estimateScreenHeight(blocks)
 
-        val cleaned  = deduplicateBlocks(filterUiNoise(blocks, sw, sh))
-        val sorted   = cleaned.sortedBy { (it.boundingBox?.top ?: 0) + (it.boundingBox?.bottom ?: 0) }
-        val url      = extractUrl(sorted, sh)
-        val pageType = detectPageType(sorted, url)
-
-        return when (pageType) {
-            PageType.BLOG_ARTICLE    -> formatBlogArticle(sorted, url, sh)
-            PageType.BOOKING_PRODUCT -> formatBookingProduct(sorted, url, sh)
-            PageType.GENERIC         -> formatGeneric(sorted, url)
-        }
+        // [FIX] dedup → noise filter 순서: 중복 제거 먼저 해야 좌표 기반 선택이 정확함
+        val dedupedBlocks = deduplicateBlocks(blocks, sw)
+        val roomName      = extractRoomName(dedupedBlocks, sw, sh)
+        val contentBlocks = filterUiNoise(dedupedBlocks, sw, sh)
+        val classified    = classifyBlocks(contentBlocks, sw)
+        val messages      = buildMessages(classified, sw)
+        return renderMessages(messages, roomName)
     }
 
-    // ─── 페이지 유형 ─────────────────────────────────────────────────────
-
-    private enum class PageType { BLOG_ARTICLE, BOOKING_PRODUCT, GENERIC }
-
-    private fun detectPageType(blocks: List<OcrBlock>, url: String?): PageType {
-        val allText  = blocks.joinToString(" ") { it.text }
-        val urlLower = url?.lowercase() ?: ""
-        return when {
-            urlLower.contains("trip.com") || urlLower.contains("booking.com") ||
-            urlLower.contains("hotel")    || urlLower.contains("hotels") ||
-            ("예약" in allText && "원" in allText) ||
-            ("결제" in allText && "원" in allText) -> PageType.BOOKING_PRODUCT
-
-            urlLower.contains("blog.naver") || urlLower.contains("tistory") ||
-            urlLower.contains("velog")      ||
-            "후기" in allText || "리뷰" in allText ||
-            "이웃추가" in allText            ||
-            blocks.any { it.text.matches(Regex(""".*\d{4}\.\s*\d{1,2}\.\s*\d{1,2}.*""")) }
-                -> PageType.BLOG_ARTICLE
-
-            else -> PageType.GENERIC
-        }
-    }
-
-    // ─── UI 노이즈 필터 ──────────────────────────────────────────────────
-
-    private fun filterUiNoise(blocks: List<OcrBlock>, sw: Int, sh: Int): List<OcrBlock> {
-        return blocks.filter { block ->
-            val box  = block.boundingBox ?: return@filter false
-            val cy   = (box.top + box.bottom) / 2.0
-            val text = block.text.trim()
-
-            if (cy < sh * STATUS_BAR_RATIO)                   return@filter false
-            if (cy > sh * (1.0 - BOTTOM_NAV_RATIO))          return@filter false
-            if (text.length == 1)                              return@filter false
-            if (text.matches(Regex("""^[<>+:=|]+$""")))       return@filter false
-
-            // 주소창 영역: URL 블록만 유지, 탭 카운트·아이콘 제거
-            if (cy < sh * ADDRESS_BAR_BOTTOM_RATIO) {
-                val isUrl     = '.' in text && text.length > 5
-                val isTabCount = text.matches(Regex("""\d{1,2}"""))
-                if (isTabCount) return@filter false
-                return@filter isUrl
-            }
-            true
-        }
-    }
+    // ─── 1. 중복 블록 제거 ───────────────────────────────────────────────
 
     /**
-     * 중복 블록 제거
-     * - 같은 영역에 두 블록이 있으면 textQualityScore가 높은 쪽 선택
-     * - 짝이 없어도 score < MIN_QUALITY_SCORE이면 즉시 제거
-     * - [FIX] 소셜 반응 블록(♡ 포함)은 score와 무관하게 항상 보존
-     *   → ♡ 특수문자 때문에 score가 음수가 되어 삭제되는 문제 방지
-     * - [FIX] DUPLICATE_OVERLAP_PX를 60으로 확대
-     *   → "스기노이 호텔 SUGINOI HOTEL"과 "A]o]l SUGINOI HOTEL"의
-     *      x 차이가 52px로 기존 20px 기준에서 쌍 인식 실패하던 문제 수정
+     * 같은 좌표 영역에 두 블록이 존재할 때 품질 점수가 높은 쪽만 남긴다.
+     *
+     * MLKit은 동일 영역을 정상 블록과 오인식 블록 두 개로 반환하는 경우가 있다.
+     * - 일반 블록: score 기준으로 선택
+     * - [FIX] 날짜 구분선 블록: isDateDivider()가 True면 DATE_BONUS 점수를 더해
+     *   오인식 복사본(예: "20264 1 28!R!)")보다 반드시 우선 선택되도록 보장
      */
-    private fun deduplicateBlocks(blocks: List<OcrBlock>): List<OcrBlock> {
+    private fun deduplicateBlocks(blocks: List<OcrBlock>, sw: Int): List<OcrBlock> {
         val result = mutableListOf<OcrBlock>()
         val used   = mutableSetOf<Int>()
 
         for (i in blocks.indices) {
             if (i in used) continue
-            val a     = blocks[i]
-            val boxA  = a.boundingBox ?: continue
-            var best  = a
-            var bestScore = textQualityScore(a.text)
+            val a    = blocks[i]
+            val boxA = a.boundingBox ?: continue
+            var best      = a
+            var bestScore = scoreForDedup(a, sw)
 
             for (j in i + 1 until blocks.size) {
                 if (j in used) continue
                 val b    = blocks[j]
                 val boxB = b.boundingBox ?: continue
                 if (isSameRegion(boxA, boxB)) {
-                    val scoreB = textQualityScore(b.text)
-                    if (scoreB > bestScore) { bestScore = scoreB; best = b }
+                    val s = scoreForDedup(b, sw)
+                    if (s > bestScore) { bestScore = s; best = b }
                     used.add(j)
                 }
             }
-
-            // [FIX] 소셜 블록(♡❤♥)은 score 무관하게 보존
-            val isSocial = isSocialInteractionBlock(best.text)
-            if (bestScore >= MIN_QUALITY_SCORE || isSocial) result.add(best)
+            result.add(best)
             used.add(i)
         }
         return result
     }
 
+    private fun scoreForDedup(block: OcrBlock, sw: Int): Int {
+        val base = textQualityScore(block.text)
+        val box  = block.boundingBox ?: return base
+        val cx   = (box.left + box.right) / 2
+        // [FIX] DateDivider 블록에 보너스 점수 부여 → 오인식 복사본보다 항상 우선 선택
+        val dateBonus = if (isDateDivider(block.text, cx, sw)) DATE_BONUS else 0
+        return base + dateBonus
+    }
+
     private fun isSameRegion(a: OcrBlock.BoundingBox, b: OcrBlock.BoundingBox): Boolean =
-        abs(a.top - b.top) < DUPLICATE_OVERLAP_Y_PX &&
-        abs(a.bottom - b.bottom) < DUPLICATE_OVERLAP_Y_PX &&
-        abs(a.left - b.left) < DUPLICATE_OVERLAP_X_PX
+        abs(a.top    - b.top)    < DUPLICATE_OVERLAP_PX &&
+        abs(a.bottom - b.bottom) < DUPLICATE_OVERLAP_PX &&
+        abs(a.left   - b.left)   < DUPLICATE_OVERLAP_PX
 
-    private fun textQualityScore(text: String): Int {
-        val korean = text.count { it in '\uAC00'..'\uD7A3' }
-        val latin  = text.count { it.isLetter() && it < '\u0100' }
-        val noise  = text.count { !it.isLetterOrDigit() && it !in " .,()%²~-:/\n" }
-        return korean * 3 + latin * 2 - noise * 4
-    }
+    // ─── 2. UI 노이즈 필터링 ────────────────────────────────────────────
 
-    // ─── URL 추출 ────────────────────────────────────────────────────────
-
-    private fun extractUrl(blocks: List<OcrBlock>, sh: Int): String? {
-        val urlBlocks = blocks.filter { block ->
-            val cy = block.boundingBox?.let { (it.top + it.bottom) / 2.0 } ?: return@filter false
-            cy < sh * ADDRESS_BAR_BOTTOM_RATIO
-        }
-        if (urlBlocks.isEmpty()) return null
-        val best = urlBlocks.maxByOrNull { textQualityScore(it.text) } ?: return null
-        return cleanUrl(best.text)
-    }
-
-    private fun cleanUrl(raw: String): String =
-        raw
-            .replace(Regex("""^[A-Za-z0-9%\s]{1,4}\s+"""), "")   // 앞 노이즈 (예: "A 5 ", "25 ")
-            .replace(Regex("""\s+[+56]\s*$"""), "")               // 뒤 탭카운트
-            .replace(Regex("""^[:\s]+"""), "")                     // 앞 콜론/공백
-            .trim()
-
-    // ─── A. 블로그/기사 포매터 ──────────────────────────────────────────
-
-    private fun formatBlogArticle(blocks: List<OcrBlock>, url: String?, sh: Int): String {
-        val sb = StringBuilder()
-        sb.appendLine("[Chrome] 웹 페이지")
-        if (url != null) sb.appendLine("URL: $url")
-        sb.appendLine("─".repeat(40))
-
-        val authorBlock = blocks.find {
-            it.text.matches(Regex(""".*\d{4}\.\s*\d{1,2}\.\s*\d{1,2}.*"""))
-        }
-        val authorTopY = authorBlock?.boundingBox?.top ?: Int.MAX_VALUE
-
-        // 제목: URL바 아래 ~ 작성자 블록 위, 의미 있는 텍스트
-        val titleParts = blocks
-            .filter { block ->
-                val top  = block.boundingBox?.top ?: 0
-                top < authorTopY && isLikelyTitle(block.text)
-            }
-            .map { it.text.trim() }
-
-        if (titleParts.isNotEmpty()) {
-            val title = titleParts.joinToString(" ")
-                .replace(Regex("""\s+"""), " ")
-                .trim()
-            sb.appendLine("제목: $title")
+    /**
+     * 대화방 이름 추출
+     *
+     * KakaoTalk 헤더 레이아웃:
+     *   [← 뒤로가기]  [대화방 이름 - 중앙]  [검색/메뉴 아이콘]
+     *
+     * 두 가지 OCR 패턴 처리:
+     *   A) "박선주" — 이름만 독립 블록, cx가 화면 중앙 근처
+     *   B) "←박선주" — 뒤로가기와 이름이 합쳐진 블록, '←' 제거 후 추출
+     */
+    private fun extractRoomName(blocks: List<OcrBlock>, sw: Int, sh: Int): String? {
+        val headerBlocks = blocks.filter { block ->
+            val box = block.boundingBox ?: return@filter false
+            val cy  = (box.top + box.bottom) / 2.0
+            cy > sh * STATUS_BAR_RATIO && cy < sh * HEADER_BOTTOM_RATIO
         }
 
-        // 작성자·날짜
-        if (authorBlock != null) {
-            val lines = authorBlock.text.split("\n")
-            if (lines.size >= 2) {
-                sb.appendLine("작성자: ${lines[0].trim()}")
-                sb.appendLine("작성일: ${lines[1].trim()}")
-            } else {
-                val dm = Regex("""(\d{4}\.\s*\d{1,2}\.\s*\d{1,2}.*)""").find(authorBlock.text)
-                val nm = Regex("""^([^\d\n]+)""").find(authorBlock.text)
-                if (nm != null) sb.appendLine("작성자: ${nm.value.trim()}")
-                if (dm != null) sb.appendLine("작성일: ${dm.value.trim()}")
+        // 패턴 B: "←이름" 형태의 합성 블록
+        headerBlocks.forEach { block ->
+            val text = block.text.trim()
+            if (text.startsWith("←")) {
+                val name = text.removePrefix("←").trim()
+                if (name.isNotEmpty() && name.length <= 20) return name
             }
         }
 
-        sb.appendLine()
-        sb.appendLine("[본문]")
-
-        val authorBottomY = authorBlock?.boundingBox?.bottom ?: 0
-        blocks
+        // 패턴 A: 중앙에 단독으로 위치한 이름 블록
+        // cx가 sw * 0.15 ~ 0.70 범위이고, 좌측 아이콘(←)보다 오른쪽에 있는 짧은 텍스트
+        return headerBlocks
             .filter { block ->
-                val top  = block.boundingBox?.top ?: 0
+                val box  = block.boundingBox ?: return@filter false
+                val cx   = (box.left + box.right) / 2.0
                 val text = block.text.trim()
-                top > authorBottomY &&
-                !isSocialInteractionBlock(text) &&
-                !isActionButton(text) &&          // [FIX] 이웃추가 등 버튼 제거
-                text.length > 2
+                cx > sw * 0.15 && cx < sw * 0.70 &&
+                text.length in 1..20 &&
+                !text.matches(Regex("""^\d{1,2}:\d{2}.*""")) &&   // 시간 제외
+                !text.matches(Regex("""^[.l\d\s]+$"""))            // 배터리/신호 노이즈 제외
             }
-            .forEach { block ->
-                block.text.split("\n").forEach { line ->
-                    if (line.trim().length > 2) sb.appendLine(line.trim())
-                }
+            .minByOrNull { block ->
+                // 화면 중앙(sw/2)에 가장 가까운 블록 선택
+                val cx = ((block.boundingBox?.left ?: 0) + (block.boundingBox?.right ?: 0)) / 2
+                Math.abs(cx - sw / 2)
             }
-
-        // 소셜 반응
-        val socialBlock = blocks.find { isSocialInteractionBlock(it.text) }
-        if (socialBlock != null) {
-            sb.appendLine()
-            sb.appendLine("[반응] ${parseSocialInteractions(socialBlock.text)}")
-        }
-
-        return sb.toString().trimEnd()
-    }
-
-    private fun isLikelyTitle(text: String): Boolean {
-        if (text.matches(Regex(""".*\d{4}\..*"""))) return false
-        // [FIX] URL 패턴(도메인 포함) 제목 오인식 방지
-        if (text.contains(".com") || text.contains(".naver") ||
-            text.contains(".kr")  || text.contains("blog")) return false
-        if (isActionButton(text)) return false
-        return text.length > 5
-    }
-
-    private fun isSocialInteractionBlock(text: String): Boolean =
-        text.matches(Regex(""".*[♡❤♥].*\d+.*""")) ||
-        text.matches(Regex(""".*\d+\s*[)]\s*\d+.*"""))
-
-    /** [FIX] "+ 이웃추가", "+ 팔로우" 등 버튼 텍스트 제거 강화 */
-    private fun isActionButton(text: String): Boolean =
-        text.matches(Regex("""^\+\s*(이웃추가|팔로우|구독|Follow)$""")) ||
-        text.matches(Regex("""^이웃추가$"""))
-
-    private fun parseSocialInteractions(text: String): String {
-        val nums = Regex("""\d+""").findAll(text).map { it.value }.toList()
-        return when {
-            nums.size >= 3 -> "좋아요 ${nums[0]}  댓글 ${nums[1]}  공유 ${nums[2]}"
-            nums.size == 2 -> "좋아요 ${nums[0]}  댓글 ${nums[1]}"
-            else           -> text
-        }
-    }
-
-    // ─── B. 예약/상품 페이지 포매터 ─────────────────────────────────────
-
-    private fun formatBookingProduct(blocks: List<OcrBlock>, url: String?, sh: Int): String {
-        val sb = StringBuilder()
-        sb.appendLine("[Chrome] 웹 페이지")
-        if (url != null) sb.appendLine("URL: $url")
-        sb.appendLine("─".repeat(40))
-
-        val productName = findProductName(blocks, sh)
-        if (productName != null) {
-            sb.appendLine("상품명: $productName")
-            sb.appendLine()
-        }
-
-        val bookingInfo = extractBookingInfo(blocks)
-        if (bookingInfo.isNotEmpty()) {
-            sb.appendLine("[예약 정보]")
-            bookingInfo.forEach { (k, v) -> sb.appendLine("$k: $v") }
-            sb.appendLine()
-        }
-
-        val benefits = extractBenefits(blocks)
-        if (benefits.isNotEmpty()) {
-            sb.appendLine("[혜택/안내]")
-            benefits.forEach { sb.appendLine(it) }
-            sb.appendLine()
-        }
-
-        val formFields = extractFormFields(blocks)
-        if (formFields.isNotEmpty()) {
-            sb.appendLine("[입력 정보]")
-            formFields.forEach { sb.appendLine(it) }
-            sb.appendLine()
-        }
-
-        val price = extractPrice(blocks)
-        if (price != null) {
-            sb.appendLine("[결제]")
-            sb.appendLine("총 금액: $price")
-        }
-
-        return sb.toString().trimEnd()
-    }
-
-    private fun findProductName(blocks: List<OcrBlock>, sh: Int): String? =
-        blocks
-            .filter { block ->
-                val cy = block.boundingBox?.let { (it.top + it.bottom) / 2.0 } ?: 0.0
-                cy in sh * 0.10..sh * 0.40 &&
-                block.text.length > 5 &&
-                !block.text.contains(Regex("""\d{4}년|\d{1,2}월\s*\d{1,2}일"""))
-            }
-            .maxByOrNull { it.text.length }
             ?.text?.trim()
+    }
 
-    private fun extractBookingInfo(blocks: List<OcrBlock>): LinkedHashMap<String, String> {
-        val info    = LinkedHashMap<String, String>()
-        val allText = blocks.joinToString("\n") { it.text }
+    private fun filterUiNoise(blocks: List<OcrBlock>, sw: Int, sh: Int): List<OcrBlock> {
+        return blocks.filter { block ->
+            val box = block.boundingBox ?: return@filter false
+            val cy = (box.top + box.bottom) / 2.0
 
-        Regex("""(\d{1,2}월\s*\d{1,2}일[^~\-\n]*)[~\-](\d{1,2}월\s*\d{1,2}일[^\n]*)""")
-            .find(allText)?.let { info["체크인/아웃"] = it.value.trim() }
+            if (cy < sh * STATUS_BAR_RATIO) return@filter false
+            if (cy > sh * (1.0 - BOTTOM_BAR_RATIO)) return@filter false
 
-        Regex("""객실\s*\d+개\s*[xX]\s*\d+박""")
-            .find(allText)?.let { stay ->
-                info["체크인/아웃"] = info["체크인/아웃"]?.let { "$it / ${stay.value.trim()}" }
-                    ?: stay.value.trim()
+            val text = block.text.trim()
+
+            // 단일 아이콘 제거
+            if (text.length == 1) return@filter false
+
+            // [FIX] OCR 오인식 노이즈 제거: quality score 임계값 적용
+            // 한글 비율이 낮고 특수문자가 많은 블록(e.g. "20264 1 28!R!)", "2A11:08") 제거
+            if (textQualityScore(text) < NOISE_SCORE_THRESHOLD) return@filter false
+
+            true
+        }
+    }
+
+    // ─── 품질 점수 ───────────────────────────────────────────────────────
+
+    /**
+     * 텍스트 품질 점수: 한글·영문 비중이 높을수록 높고, 특수문자 노이즈가 많을수록 낮아짐.
+     * 임계값(NOISE_SCORE_THRESHOLD=3) 미만이면 OCR 오인식 블록으로 간주하고 버림.
+     */
+    private fun textQualityScore(text: String): Int {
+        val korean  = text.count { it in '\uAC00'..'\uD7A3' }
+        val latin   = text.count { it.isLetter() && it < '\u0100' }
+        val digits  = text.count { it.isDigit() }
+        val noise   = text.count { !it.isLetterOrDigit() && it !in " .,:()!?~\n" }
+        return korean * 3 + latin * 2 + digits - noise * 5
+    }
+
+    // ─── 2. 블록 분류 ────────────────────────────────────────────────────
+
+    private sealed class BlockType {
+        data class DateDivider(val text: String, val cy: Int) : BlockType()
+        data class SenderName(val name: String, val cy: Int, val cx: Int) : BlockType()
+        data class Timestamp(val time: String, val cy: Int, val cx: Int) : BlockType()
+        // [FIX] left edge 기반 판별로 교체
+        // - 상대방: left < sw*0.25 (아바타 공간 때문에 항상 좌측 끝에서 시작)
+        // - 나:     left > sw*0.30 (우측 정렬, 항상 화면 중간 이상에서 시작)
+        // - right edge는 상대방 긴 메시지도 우측까지 뻗어 오판정 발생
+        data class Message(val text: String, val cy: Int, val cx: Int,
+                           val left: Int, val right: Int) : BlockType()
+        // [추가] 링크카드: left < 25% + width > 40% → 상대방이 공유한 미리보기 카드
+        data class LinkCard(val text: String, val cy: Int, val url: String?) : BlockType()
+    }
+
+    private fun classifyBlocks(blocks: List<OcrBlock>, sw: Int): List<BlockType> {
+        return blocks.mapNotNull { block ->
+            val box  = block.boundingBox ?: return@mapNotNull null
+            val text = block.text.trim()
+            val cy   = (box.top + box.bottom) / 2
+            val cx   = (box.left + box.right) / 2
+
+            when {
+                isDateDivider(text, cx, sw) ->
+                    BlockType.DateDivider(cleanDateText(text), cy)
+
+                isTimestamp(text) ->
+                    BlockType.Timestamp(normalizeTimestamp(text), cy, cx)
+
+                isSenderName(text, box, sw) ->
+                    BlockType.SenderName(text, cy, cx)
+
+                isLinkCard(box, text, sw) ->
+                    BlockType.LinkCard(text, cy, extractUrlFromBlock(text))
+
+                isMessageText(text) ->
+                    BlockType.Message(text, cy, cx, box.left, box.right)
+
+                else -> null
             }
+        }
+    }
 
-        blocks.find { "룸" in it.text || "room" in it.text.lowercase() || "뷰" in it.text }
-            ?.let { info["객실"] = it.text.trim() }
+    private fun isDateDivider(text: String, cx: Int, sw: Int): Boolean {
+        val isCentered = cx > sw * 0.30 && cx < sw * 0.70
+        return isCentered && (
+            text.matches(Regex("""\d{4}년\s*\d{1,2}월\s*\d{1,2}일.*""")) ||
+            text.contains("요일")
+        )
+    }
 
-        val optionParts = blocks
-            .filter { "침대" in it.text || "금연" in it.text || "조식" in it.text || "석식" in it.text }
-            .map { it.text.trim() }
-        if (optionParts.isNotEmpty()) info["옵션"] = optionParts.joinToString(" / ")
+    private fun isTimestamp(text: String): Boolean =
+        text.matches(Regex("""오[전후]\s*\d{1,2}:\d{2}""")) ||
+        text.matches(Regex("""^\d{1,2}:\d{2}$"""))
 
-        return info
+    private fun isSenderName(text: String, box: OcrBlock.BoundingBox?, sw: Int): Boolean {
+        if (box == null) return false
+        val isLeft    = box.left < sw * 0.35
+        val isShort   = text.length in 2..8
+        val noDigits  = !text.any { it.isDigit() }
+        val noSpecial = !text.contains(Regex("""[\[\](){}=+!?]"""))
+        return isLeft && isShort && noDigits && noSpecial
     }
 
     /**
-     * 혜택 섹션 추출
-     * [FIX] 동일 키워드 중복 방지: 같은 카테고리(무료 취소, 할인, 적립)는 첫 번째 블록만 사용
+     * 링크카드 판별 전략
+     * 카카오톡 링크 미리보기는 [제목] + [설명] + [URL] 세 블록이 세로로 묶인 구조.
+     * URL 블록(도메인 패턴)을 anchor로 삼아 위아래 인접 블록을 카드로 그룹핑.
+     * → isLinkCard()는 URL 블록 자체만 True로 반환하고,
+     *   buildMessages()에서 URL 블록 기준 ±LINK_CARD_RANGE_PX 내 좌측 블록을 카드로 병합.
      */
-    private fun extractBenefits(blocks: List<OcrBlock>): List<String> {
-        val result       = mutableListOf<String>()
-        var freeCancelAdded = false
-        var discountAdded   = false
-        var pointAdded      = false
+    private fun isLinkCard(box: OcrBlock.BoundingBox, text: String, sw: Int): Boolean {
+        val leftRatio = box.left.toDouble() / sw
+        val hasUrl    = URL_PATTERN.containsMatchIn(text)
+        return leftRatio < 0.30 && hasUrl
+    }
 
-        blocks.forEach { block ->
-            val text = block.text.trim()
+    private fun extractUrlFromBlock(text: String): String? =
+        URL_PATTERN.find(text)?.value
 
-            if (!freeCancelAdded && "무료 취소" in text && "전" in text) {
-                // "무료 취소" 단독 버튼 블록(짧은 것)은 제외
-                if (text.length > 6) {
-                    val dm = Regex("""\d{1,2}월\s*\d{1,2}일[^\n]*23:59[^\n]*""").find(text)
-                    result.add("무료 취소: ${dm?.value?.trim() ?: text}")
-                    freeCancelAdded = true
+    private fun isMessageText(text: String): Boolean =
+        text.length >= 2 && !text.matches(Regex("""[0-9:. ]+"""))
+
+    // ─── 3. 대화 메시지 재구성 ──────────────────────────────────────────
+
+    private data class ChatMessage(
+        val sender: String,
+        val time: String,
+        val text: String,
+        val topY: Int
+    )
+
+    private data class LinkCardMessage(
+        val text: String,
+        val url: String?,
+        val topY: Int
+    )
+
+    private fun buildMessages(classified: List<BlockType>, sw: Int): List<Any> {
+        val sorted = classified.sortedBy { block ->
+            when (block) {
+                is BlockType.DateDivider -> block.cy
+                is BlockType.SenderName  -> block.cy
+                is BlockType.Timestamp   -> block.cy
+                is BlockType.Message     -> block.cy
+                is BlockType.LinkCard    -> block.cy
+            }
+        }
+
+        val messages     = sorted.filterIsInstance<BlockType.Message>()
+        val linkCards    = sorted.filterIsInstance<BlockType.LinkCard>()
+        val timestamps   = sorted.filterIsInstance<BlockType.Timestamp>()
+        val senderNames  = sorted.filterIsInstance<BlockType.SenderName>()
+        val dateDividers = sorted.filterIsInstance<BlockType.DateDivider>()
+
+        val result = mutableListOf<Any>()
+        dateDividers.forEach { result.add(it.text) }
+
+        // 링크카드: URL 블록(anchor) 기준으로 위아래 LINK_CARD_RANGE_PX 내
+        // 좌측(left < sw*0.30) 메시지 블록을 카드 제목/설명으로 병합
+        val linkCardCySet = mutableSetOf<Int>()
+        linkCards.forEach { card ->
+            val relatedMessages = messages.filter { msg ->
+                msg.left < sw * 0.30 &&
+                abs(msg.cy - card.cy) < LINK_CARD_RANGE_PX
+            }
+            val cardText = (relatedMessages.map { it.text } + card.text)
+                .filter { !URL_PATTERN.containsMatchIn(it) }  // URL 줄 제외
+                .joinToString("\n")
+            result.add(LinkCardMessage(cardText.ifEmpty { card.text }, card.url, card.cy))
+            // 링크카드에 흡수된 메시지 블록은 일반 메시지에서 제외
+            relatedMessages.forEach { linkCardCySet.add(it.cy) }
+        }
+
+        val usedTimestamps = mutableSetOf<Int>()
+        // 링크카드에 흡수된 메시지 블록 제외
+        val messageGroups  = groupMessageBlocks(
+            messages.filter { it.cy !in linkCardCySet }, sw
+        )
+
+        messageGroups.forEach { group ->
+            val first = group.first()
+            // [FIX] left edge 기반 발신자 판별
+            // 상대방: left < sw * THEIRS_LEFT_RATIO (0.25)
+            // 나:     left > sw * MINE_LEFT_RATIO   (0.30)
+            val isMyMessage = first.left > sw * MINE_LEFT_RATIO
+
+            val nearestTs = findNearestTimestamp(timestamps, first.cy, usedTimestamps)
+            nearestTs?.let { usedTimestamps.add(it.cy) }
+
+            val sender = if (isMyMessage) "나"
+                         else findNearestSenderName(senderNames, first.cy)?.name ?: "상대방"
+
+            result.add(
+                ChatMessage(
+                    sender = sender,
+                    time   = nearestTs?.time ?: "",
+                    text   = group.joinToString("\n") { it.text },
+                    topY   = first.cy
+                )
+            )
+        }
+
+        return result.sortedBy { item ->
+            when (item) {
+                is String          -> dateDividers.find { it.text == item }?.cy ?: 0
+                is ChatMessage     -> item.topY
+                is LinkCardMessage -> item.topY
+                else               -> 0
+            }
+        }
+    }
+
+    private fun groupMessageBlocks(
+        messages: List<BlockType.Message>,
+        sw: Int
+    ): List<List<BlockType.Message>> {
+        if (messages.isEmpty()) return emptyList()
+
+        val groups = mutableListOf<MutableList<BlockType.Message>>()
+        var current     = mutableListOf(messages.first())
+        // [FIX] 그룹핑 기준도 left edge로 교체
+        var currentSide = messages.first().left > sw * MINE_LEFT_RATIO
+
+        for (i in 1 until messages.size) {
+            val msg     = messages[i]
+            val msgSide = msg.left > sw * MINE_LEFT_RATIO
+            val gap     = msg.cy - current.last().cy
+
+            if (msgSide == currentSide && gap < MESSAGE_MERGE_GAP_PX) {
+                current.add(msg)
+            } else {
+                groups.add(current)
+                current     = mutableListOf(msg)
+                currentSide = msgSide
+            }
+        }
+        groups.add(current)
+        return groups
+    }
+
+    private fun findNearestTimestamp(
+        timestamps: List<BlockType.Timestamp>,
+        cy: Int,
+        used: Set<Int>
+    ): BlockType.Timestamp? =
+        timestamps
+            .filter { it.cy !in used }
+            .minByOrNull { abs(it.cy - cy) }
+            ?.takeIf { abs(it.cy - cy) < TIMESTAMP_SEARCH_RANGE_PX }
+
+    private fun findNearestSenderName(
+        names: List<BlockType.SenderName>,
+        cy: Int
+    ): BlockType.SenderName? =
+        names
+            .filter { it.cy < cy }
+            .minByOrNull { cy - it.cy }
+            ?.takeIf { cy - it.cy < SENDER_NAME_SEARCH_RANGE_PX }
+
+    // ─── 4. 렌더링 ──────────────────────────────────────────────────────
+
+    private fun renderMessages(messages: List<Any>, roomName: String?): String {
+        val sb = StringBuilder()
+        val header = if (roomName != null) "[KakaoTalk] $roomName" else "[KakaoTalk 대화]"
+        sb.appendLine(header)
+        sb.appendLine("─".repeat(40))
+
+        messages.forEach { item ->
+            when (item) {
+                is String -> {
+                    sb.appendLine()
+                    sb.appendLine("  ── $item ──")
+                    sb.appendLine()
+                }
+                is ChatMessage -> {
+                    val timeStr = if (item.time.isNotEmpty()) " ${item.time}" else ""
+                    sb.appendLine("[${item.sender}]$timeStr  ${item.text}")
+                }
+                is LinkCardMessage -> {
+                    val urlStr = if (item.url != null) " (${item.url})" else ""
+                    sb.appendLine("[링크카드]  ${item.text}$urlStr")
                 }
             }
-
-            if (!discountAdded && "할인" in text && "원" in text) {
-                val am = Regex("""[\d,]+원""").find(text)
-                result.add("할인: ${am?.value ?: text}")
-                discountAdded = true
-            }
-
-            if (!pointAdded && ("트립코인" in text || "포인트" in text || "적립" in text)
-                && text.length > 6) {
-                // 두 블록으로 분리된 경우 합치기
-                val combined = blocks
-                    .filter { "트립코인" in it.text || "상당" in it.text || "적립" in it.text }
-                    .joinToString(" ") { it.text.trim() }
-                    .replace(Regex("""\s+"""), " ")
-                result.add("적립: $combined")
-                pointAdded = true
-            }
         }
-        return result
-    }
 
-    private fun extractFormFields(blocks: List<OcrBlock>): List<String> {
-        val result = mutableListOf<String>()
-        val triggers = listOf("성*", "이름*", "이메일*", "연락처*", "투숙객", "*필수 입력사항")
-        blocks.forEach { block ->
-            val text = block.text.trim()
-            if (triggers.any { text.startsWith(it) || text == it }) result.add(text)
-        }
-        blocks.find { "e.g." in it.text || "예:" in it.text }
-            ?.let { result.add("  ${it.text.trim()}") }
-        return result
-    }
-
-    private fun extractPrice(blocks: List<OcrBlock>): String? {
-        return blocks
-            .filter { it.text.matches(Regex("""[\d,]+[원o]?.*""")) && it.text.length > 4 }
-            .maxByOrNull {
-                Regex("""[\d,]+""").find(it.text)?.value?.replace(",", "")?.toLongOrNull() ?: 0L
-            }
-            ?.text
-            ?.trim()
-            ?.replace(Regex("""[oO]$"""), "원")  // [FIX] OCR 오인식 '원' → 'o' 보정
-    }
-
-    // ─── C. 범용 포매터 ──────────────────────────────────────────────────
-
-    private fun formatGeneric(blocks: List<OcrBlock>, url: String?): String {
-        val sb = StringBuilder()
-        sb.appendLine("[Chrome] 웹 페이지")
-        if (url != null) sb.appendLine("URL: $url")
-        sb.appendLine("─".repeat(40))
-        sb.appendLine()
-        blocks.forEach { block ->
-            block.text.trim().split("\n").forEach { line ->
-                if (line.trim().length > 2) sb.appendLine(line.trim())
-            }
-        }
         return sb.toString().trimEnd()
     }
 
@@ -470,21 +443,38 @@ class ChromeOcrTextFormatter @Inject constructor() : OcrTextFormatter {
     private fun estimateScreenHeight(blocks: List<OcrBlock>): Int =
         (blocks.maxOfOrNull { it.boundingBox?.bottom ?: 0 } ?: 0) + 200
 
+    private fun cleanDateText(text: String): String =
+        text.replace(Regex("""\s*>\s*$"""), "").trim()
+
+    private fun normalizeTimestamp(text: String): String =
+        text.replace(Regex("""\s+"""), " ").trim()
+
     companion object {
-        const val CHROME_PACKAGE      = "com.android.chrome"
-        const val CHROME_BETA_PACKAGE = "com.chrome.beta"
+        const val KAKAO_TALK_PACKAGE = "com.kakao.talk"
 
         private const val DEFAULT_SCREEN_WIDTH  = 1080
         private const val DEFAULT_SCREEN_HEIGHT = 2400
 
-        private const val STATUS_BAR_RATIO          = 0.04
-        private const val BOTTOM_NAV_RATIO          = 0.07
-        private const val ADDRESS_BAR_BOTTOM_RATIO  = 0.12
+        private const val STATUS_BAR_RATIO  = 0.06
+        private const val BOTTOM_BAR_RATIO  = 0.10
+        // 헤더(대화방 이름) 탐색 영역: 상태바 아래 ~ 화면 높이의 10%
+        private const val HEADER_BOTTOM_RATIO = 0.10
 
-        private const val DUPLICATE_OVERLAP_Y_PX = 20
-        // [FIX] x 허용치 확대: "스기노이 SUGINOI HOTEL" vs "A]o]l SUGINOI HOTEL" 좌측 x 차이 52px
-        private const val DUPLICATE_OVERLAP_X_PX = 60
-        // [FIX] 소셜 블록은 별도 보존 로직으로 처리하므로 MIN_QUALITY_SCORE는 유지
-        private const val MIN_QUALITY_SCORE     = 0
+        private const val MINE_LEFT_RATIO   = 0.30
+        private const val THEIRS_LEFT_RATIO = 0.25
+        // 링크카드: URL 블록 기준 위아래 탐색 범위 (px)
+        private const val LINK_CARD_RANGE_PX = 350
+        private val URL_PATTERN = Regex("""[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[\w./-]*)?""")
+        private const val MESSAGE_MERGE_GAP_PX     = 120
+        private const val TIMESTAMP_SEARCH_RANGE_PX   = 300
+        private const val SENDER_NAME_SEARCH_RANGE_PX = 200
+
+        // [FIX] OCR 오인식 블록 제거 임계값: 이 값 미만이면 노이즈로 간주
+        private const val NOISE_SCORE_THRESHOLD = 3
+
+        // dedup: 같은 좌표로 판정할 y/x 오차 허용치 (px)
+        private const val DUPLICATE_OVERLAP_PX = 25
+        // dedup: DateDivider 블록에 부여하는 보너스 점수 (오인식 복사본보다 항상 우선 선택)
+        private const val DATE_BONUS = 50
     }
 }
