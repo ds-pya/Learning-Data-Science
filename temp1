@@ -1,27 +1,253 @@
-## MLKit 사이드카 + Python 서버 플랜
+/**
+ * KakaoTalk OCR Block → Structured Chat Formatter
+ *
+ * 설계 원칙:
+ * 1. 좌표 기반 화자 판별 (x < 절반 = 상대, x > 절반 = 나)
+ * 2. 중복 블록 제거 (같은 bounding box, OCR 노이즈 변형)
+ * 3. 블록 역할 분류 후 조립 (TIMESTAMP / SENDER / MESSAGE / SYSTEM / UI)
+ * 4. 발화 그룹 단위로 출력
+ */
 
-### 1. Android 사이드카 앱 (Kotlin)
-- Ktor 내장 HTTP 서버 (포트 9090)
-- 엔드포인트 2개:
-  - `POST /ocr` → `ScreenshotOCRExtractor` 실행 후 JSON 반환
-  - `POST /label` → `MLKitImageLabelingExtractor` 실행 후 JSON 반환
-- 이미지는 multipart 또는 base64로 수신
-- 앱 실행 시 자동 서버 시작 (Foreground Service)
+data class OcrBlock(
+    val text: String,
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int
+) {
+    val centerX get() = (left + right) / 2
+    val centerY get() = (top + bottom) / 2
+    val width get() = right - left
+    val height get() = bottom - top
+}
 
-### 2. PC 연결 설정
-- USB 연결 + `adb forward tcp:9090 tcp:9090`
-- (선택) adb forward를 Python 서버 시작 시 자동 실행
+data class ChatMessage(
+    val sender: String,   // "나" | 이름 | ""
+    val body: String,
+    val timestamp: String,
+    val isMe: Boolean
+)
 
-### 3. Python 웹 서버 (FastAPI)
-- 이미지 업로드 받아서:
-  - MLKit 결과 → `localhost:9090` 사이드카 호출
-  - GGUF 모델 결과 → `llama-cpp-python` 직접 실행
-- 결과 통합 후 클라이언트에 반환
+fun formatKakaoOcr(blocksJson: String, screenWidth: Int = 1080): String {
 
-### 4. 웹 UI
-- 이미지 업로드 폼
-- OCR / 라벨링 / GGUF 결과 표시
+    val blocks = parseBlocks(blocksJson)
 
----
+    // ── STEP 1: 노이즈 블록 제거 ──────────────────────────────────────────
+    val cleaned = blocks
+        .filter { !isUiChrome(it) }          // 상태바, 버튼, |||, +, # 등
+        .let { deduplicateBlocks(it) }        // 동일 위치 중복 제거
 
-**개발 순서 추천**: Android 사이드카 → adb 연결 테스트 → FastAPI 통합 → UI
+    // ── STEP 2: 블록 역할 분류 ────────────────────────────────────────────
+    val classified = cleaned.map { block ->
+        Pair(block, classifyBlock(block, screenWidth))
+    }
+
+    // ── STEP 3: y좌표 정렬 후 발화 그룹 조립 ─────────────────────────────
+    val sorted = classified.sortedBy { it.first.top }
+    val messages = assembleChatMessages(sorted, screenWidth)
+
+    // ── STEP 4: 마크다운 출력 ─────────────────────────────────────────────
+    return renderMarkdown(messages)
+}
+
+// ── 블록 역할 Enum ────────────────────────────────────────────────────────
+
+enum class BlockRole {
+    TIMESTAMP,      // 오전/오후 HH:MM
+    DATE_DIVIDER,   // 2026년 X월 X일 수요일
+    SENDER_NAME,    // 상대방 이름 (말풍선 왼쪽 위)
+    MESSAGE,        // 본문
+    REPLY_QUOTE,    // "XXX에게 답장" + 인용
+    SYSTEM,         // 카카오페이, 네이버지도 등 시스템 카드
+    UI_CHROME       // 무시
+}
+
+// ── 핵심 함수들 ───────────────────────────────────────────────────────────
+
+fun isUiChrome(block: OcrBlock): Boolean {
+    val t = block.text.trim()
+    // 상태바 시간: 단독 "HH:MM" (오전/오후 없음, 상단 위치)
+    if (block.top < 100 && t.matches(Regex("""^\d{1,2}:\d{2}$"""))) return true
+    // 배터리/신호: 숫자만 or 특수문자
+    if (t.matches(Regex("""^[\d\s.,|<>←+#%lIL\[\]{}()]+$"""))) return true
+    // 네비게이션 바
+    if (t == "|||" || t == "|") return true
+    // 입력창 placeholder
+    if (t.contains("메시지 입력") || t.contains("베시지 입력")) return true
+    // LTE, WiFi 아이콘 텍스트
+    if (t.matches(Regex("""^(LTE|WiFi|eats|in|1in|lin)$"""))) return true
+    return false
+}
+
+fun deduplicateBlocks(blocks: List<OcrBlock>): List<OcrBlock> {
+    val result = mutableListOf<OcrBlock>()
+    for (block in blocks.sortedBy { -it.text.length }) { // 긴 텍스트 우선
+        val isDuplicate = result.any { existing ->
+            val iouX = overlapRatio(block.left, block.right, existing.left, existing.right)
+            val iouY = overlapRatio(block.top, block.bottom, existing.top, existing.bottom)
+            iouX > 0.7 && iouY > 0.7  // 70% 이상 겹치면 중복
+        }
+        if (!isDuplicate) result.add(block)
+    }
+    return result
+}
+
+fun overlapRatio(s1: Int, e1: Int, s2: Int, e2: Int): Float {
+    val overlap = minOf(e1, e2) - maxOf(s1, s2)
+    if (overlap <= 0) return 0f
+    val union = maxOf(e1, e2) - minOf(s1, s2)
+    return overlap.toFloat() / union
+}
+
+fun classifyBlock(block: OcrBlock, screenWidth: Int): BlockRole {
+    val t = block.text.trim()
+
+    // 날짜 구분선: 화면 중앙 위치 + "년/월/일" 포함
+    if (t.contains("년") && t.contains("월") && t.contains("일")
+        && block.centerX in (screenWidth * 0.3).toInt()..(screenWidth * 0.7).toInt()
+    ) return BlockRole.DATE_DIVIDER
+
+    // 타임스탬프: "오전/오후 HH:MM" 패턴 + 말풍선 아래 위치(좁은 블록)
+    if (t.matches(Regex("""^(오전|오후)\s*\d{1,2}:\d{2}$"""))) return BlockRole.TIMESTAMP
+
+    // 답장 블록: 텍스트에 "에게 답장" 포함
+    if (t.contains("에게 답장")) return BlockRole.REPLY_QUOTE
+
+    // 시스템 카드: 카카오페이, 네이버지도 등
+    if (t.contains("카카오페이") || t.contains("네이버지도")
+        || t.contains("송금봉투") || t.contains("송금 받기")
+    ) return BlockRole.SYSTEM
+
+    // 발화자 이름: 좌측(x < 40% 화면), 짧고 한글만, 말풍선 바로 위
+    val isLeftSide = block.right < screenWidth * 0.45
+    val isShortKorean = t.length in 2..6 && t.matches(Regex("""^[가-힣☆★\s]+$"""))
+    if (isLeftSide && isShortKorean) return BlockRole.SENDER_NAME
+
+    return BlockRole.MESSAGE
+}
+
+fun assembleChatMessages(
+    sorted: List<Pair<OcrBlock, BlockRole>>,
+    screenWidth: Int
+): List<ChatMessage> {
+    val messages = mutableListOf<ChatMessage>()
+    var currentSender = ""
+    var currentBody = StringBuilder()
+    var currentTimestamp = ""
+    var currentIsMe = false
+    val midX = screenWidth / 2
+
+    // 발화자 이름 → 직후 메시지 블록에 연결하기 위해 lookahead 방식 사용
+    var pendingSenderName = ""
+
+    for ((block, role) in sorted) {
+        when (role) {
+            BlockRole.DATE_DIVIDER -> {
+                flushMessage(messages, currentSender, currentBody, currentTimestamp, currentIsMe)
+                currentBody = StringBuilder()
+                messages.add(ChatMessage("__DATE__", block.text.trim(), "", false))
+            }
+
+            BlockRole.SENDER_NAME -> {
+                // 이전 메시지 flush
+                if (currentBody.isNotEmpty()) {
+                    flushMessage(messages, currentSender, currentBody, currentTimestamp, currentIsMe)
+                    currentBody = StringBuilder()
+                }
+                pendingSenderName = block.text.trim()
+            }
+
+            BlockRole.TIMESTAMP -> {
+                val ts = normalizeTimestamp(block.text)
+                // 타임스탬프는 직전 메시지에 붙임
+                if (currentBody.isNotEmpty()) {
+                    currentTimestamp = ts
+                } else if (messages.isNotEmpty()) {
+                    // 이미 flush된 마지막 메시지에 붙이기
+                    val last = messages.lastOrNull()
+                    if (last != null && last.sender != "__DATE__") {
+                        messages[messages.lastIndex] = last.copy(timestamp = ts)
+                    }
+                }
+            }
+
+            BlockRole.MESSAGE -> {
+                val isMe = block.centerX > midX
+
+                // 화자가 바뀌면 flush
+                if (currentBody.isNotEmpty() && isMe != currentIsMe) {
+                    flushMessage(messages, currentSender, currentBody, currentTimestamp, currentIsMe)
+                    currentBody = StringBuilder()
+                    currentTimestamp = ""
+                }
+
+                if (currentBody.isEmpty()) {
+                    currentSender = if (isMe) "나" else pendingSenderName
+                    currentIsMe = isMe
+                    pendingSenderName = ""
+                }
+
+                // 멀티라인 블록 처리
+                if (currentBody.isNotEmpty()) currentBody.append("\n")
+                currentBody.append(block.text.trim())
+            }
+
+            BlockRole.REPLY_QUOTE -> {
+                // [답장] 태그로 인용 처리
+                val quoted = block.text
+                    .replace(Regex("""^.*?에게 답장\s*"""), "")
+                    .trim()
+                if (currentBody.isNotEmpty()) currentBody.append("\n")
+                currentBody.append("[답장: $quoted]")
+            }
+
+            BlockRole.SYSTEM, BlockRole.UI_CHROME -> { /* skip */ }
+        }
+    }
+
+    flushMessage(messages, currentSender, currentBody, currentTimestamp, currentIsMe)
+    return messages
+}
+
+fun normalizeTimestamp(raw: String): String {
+    // "2411:08" → "오전 11:08", "2E8:49" → "오후 8:49" 등 OCR 노이즈 정규화
+    val normalized = raw
+        .replace(Regex("""^[2Q][A-Z0-9ĂĘ]?\s*"""), "")  // 앞 노이즈 제거
+        .trim()
+    return when {
+        normalized.startsWith("오전") || normalized.startsWith("오후") -> normalized
+        else -> raw.trim()  // 파싱 실패 시 원본 유지
+    }
+}
+
+fun flushMessage(
+    messages: MutableList<ChatMessage>,
+    sender: String,
+    body: StringBuilder,
+    timestamp: String,
+    isMe: Boolean
+) {
+    if (body.isNotEmpty()) {
+        messages.add(ChatMessage(sender, body.toString(), timestamp, isMe))
+    }
+}
+
+fun renderMarkdown(messages: List<ChatMessage>): String {
+    val sb = StringBuilder()
+    for (msg in messages) {
+        when {
+            msg.sender == "__DATE__" ->
+                sb.appendLine("\n**${msg.body}**\n")
+            msg.isMe -> {
+                val ts = if (msg.timestamp.isNotEmpty()) " _(${msg.timestamp})_" else ""
+                sb.appendLine("**나**: ${msg.body}$ts\n")
+            }
+            else -> {
+                val name = if (msg.sender.isNotEmpty()) msg.sender else "상대방"
+                val ts = if (msg.timestamp.isNotEmpty()) " _(${msg.timestamp})_" else ""
+                sb.appendLine("**$name**: ${msg.body}$ts\n")
+            }
+        }
+    }
+    return sb.toString()
+}
