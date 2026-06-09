@@ -6,60 +6,41 @@ import javax.inject.Inject
 import kotlin.math.abs
 
 /**
- * Chrome 브라우저 OCR → 구조화 텍스트 변환기
+ * Gemini 앱 OCR → 구조화 텍스트 변환기
  *
- * ## Chrome 화면 시나리오 및 이상적인 출력 스키마
- *
- * ### A. 블로그/기사 (naver blog 등)
+ * ## 이상적인 출력 스키마
  * ```
- * [Chrome] 웹 페이지
- * URL: m.blog.naver.com/...
+ * [Gemini] Gemini Flash
  * ────────────────────────────────────────
- * 제목: 일본 벳푸 호텔 추천, 스기노이 호텔 내돈내산 후기
- * 작성자: JINIE HAN
- * 작성일: 2026. 1. 14. 12:20
  *
- * [본문]
- * 내돈내산으로 숙박한 솔직한 후기
- * 스기노이 호텔 SUGINOI HOTEL
- * 2인기준 숙박 가격 약 30만원 ~ 50만원 ...
+ * [질문]
+ * 스기노이 호텔 주변 맛집
  *
- * [반응] 좋아요 32  댓글 2  공유 18
+ * [답변]
+ * 벳부 스기노이 호텔 주변 및 벳부 시내의 대표적인 맛집을 도보 이동이 가능한 곳과
+ * 차량/대중교통으로 가기 좋은 곳으로 나누어 추천해드립니다.
+ *
+ * 1. 호텔에서 도보 이동 가능한 주변 맛집
+ * 스기노이 호텔이 위치한 관해지(Kankaiji) 온천 지대는 고지대에 있어 ...
+ *
+ *   • 고조 (Gojo / そば処 五条)
+ *     특징: 호텔에서 도보로 약 5~10분 거리에 있는 아늑한 소바 및 우동 전문점
+ *           (수·목요일 휴무 / 오후 3시까지만 영업)
+ *     추천 메뉴: 냉소바, 우동 종류
+ *
+ *   • 춘코엔 (Shunkoen / 焼肉 春香苑)
  * ```
  *
- * ### B. 상품/예약 페이지 (trip.com 등)
- * ```
- * [Chrome] 웹 페이지
- * URL: kr.trip.com/m/hotels/
- * ────────────────────────────────────────
- * 상품명: 벳푸 스기노이 호텔 (오릭스 호텔 & 리조트)
- *
- * [예약 정보]
- * 체크인/아웃: 6월 28일(일) - 6월 30일(화) / 객실 1개 x 2박
- * 객실: 소라 칸 디럭스 룸, 오션 뷰 (46m²)
- * 옵션: 싱글 침대 4개 & 소파침대 1개 / 금연 / 조식 및 석식 포함(2인)
- *
- * [혜택/안내]
- * 무료 취소: 6월 20일 23:59 전
- * 할인: 14,104원
- * 적립: 403 트립코인 (약 6,129원 상당)
- *
- * [입력 정보]
- * 투숙객 / 성* / 이름*
- *   e.g. Smith
- *
- * [결제]
- * 총 금액: 1,223,592원
- * ```
- *
- * ## 핵심 수정 사항
- * 1. deduplicateBlocks: textQualityScore < 0 인 블록은 짝이 없어도 즉시 제거
- * 2. 블로그 isActionButton: "+ 이웃추가" 등 버튼 텍스트 필터 강화
- * 3. 블로그 본문: 중복 오인식 블록(A]o]l 등) dedup 후 score<0 추가 제거
- * 4. 예약 혜택 섹션: 동일 키워드(무료 취소 등) 중복 출력 방지
- * 5. URL cleanUrl: 앞뒤 노이즈 제거 패턴 강화
+ * ## 핵심 수정: 질문 오판정 문제
+ * 문제: Gemini 답변 중 들여쓰기 블록들이 cx > 50% 조건에 걸려 [질문]으로 오분류됨
+ *       (예: "특징: 호텔에서 도보로 약 5~10분", "메밀소바와 따뜻한 우동을 선보이며...")
+ * 원인: Gemini 답변 텍스트가 화면 중앙~우측에 넓게 배치되어 cx 중앙값이 50%를 초과
+ * 해결:
+ *   1. QUESTION_CX_THRESHOLD 0.50 → 0.65 로 상향 (질문 버블은 우측 정렬이 더 뚜렷함)
+ *   2. 질문 버블 추가 조건: width가 화면의 70% 미만 (답변 텍스트는 거의 full-width)
+ *   3. 질문 버블 추가 조건: right edge가 화면 우측에 근접 (right > sw * 0.85)
  */
-class ChromeOcrTextFormatter @Inject constructor() : OcrTextFormatter {
+class GeminiOcrTextFormatter @Inject constructor() : OcrTextFormatter {
 
     override fun format(
         blocks: List<OcrBlock>,
@@ -67,49 +48,27 @@ class ChromeOcrTextFormatter @Inject constructor() : OcrTextFormatter {
         screenWidth: Int,
         screenHeight: Int
     ): String? {
-        if (packageName != CHROME_PACKAGE && packageName != CHROME_BETA_PACKAGE) return null
+        if (!isGeminiPackage(packageName)) return null
         if (blocks.isEmpty()) return null
 
         val sw = if (screenWidth > 0) screenWidth else estimateScreenWidth(blocks)
         val sh = if (screenHeight > 0) screenHeight else estimateScreenHeight(blocks)
 
-        val cleaned  = deduplicateBlocks(filterUiNoise(blocks, sw, sh))
-        val sorted   = cleaned.sortedBy { (it.boundingBox?.top ?: 0) + (it.boundingBox?.bottom ?: 0) }
-        val url      = extractUrl(sorted, sh)
-        val pageType = detectPageType(sorted, url)
+        val cleaned = deduplicateBlocks(filterUiNoise(blocks, sw, sh))
+        val sorted  = cleaned.sortedBy { (it.boundingBox?.top ?: 0) + (it.boundingBox?.bottom ?: 0) }
 
-        return when (pageType) {
-            PageType.BLOG_ARTICLE    -> formatBlogArticle(sorted, url, sh)
-            PageType.BOOKING_PRODUCT -> formatBookingProduct(sorted, url, sh)
-            PageType.GENERIC         -> formatGeneric(sorted, url)
-        }
+        val modelName  = extractModelName(sorted, sw, sh)
+        val classified = classifyBlocks(sorted, sw, sh)
+
+        return render(modelName, classified)
     }
 
-    // ─── 페이지 유형 ─────────────────────────────────────────────────────
+    // ─── 패키지 판별 ─────────────────────────────────────────────────────
 
-    private enum class PageType { BLOG_ARTICLE, BOOKING_PRODUCT, GENERIC }
+    private fun isGeminiPackage(packageName: String?): Boolean =
+        packageName in GEMINI_PACKAGES
 
-    private fun detectPageType(blocks: List<OcrBlock>, url: String?): PageType {
-        val allText  = blocks.joinToString(" ") { it.text }
-        val urlLower = url?.lowercase() ?: ""
-        return when {
-            urlLower.contains("trip.com") || urlLower.contains("booking.com") ||
-            urlLower.contains("hotel")    || urlLower.contains("hotels") ||
-            ("예약" in allText && "원" in allText) ||
-            ("결제" in allText && "원" in allText) -> PageType.BOOKING_PRODUCT
-
-            urlLower.contains("blog.naver") || urlLower.contains("tistory") ||
-            urlLower.contains("velog")      ||
-            "후기" in allText || "리뷰" in allText ||
-            "이웃추가" in allText            ||
-            blocks.any { it.text.matches(Regex(""".*\d{4}\.\s*\d{1,2}\.\s*\d{1,2}.*""")) }
-                -> PageType.BLOG_ARTICLE
-
-            else -> PageType.GENERIC
-        }
-    }
-
-    // ─── UI 노이즈 필터 ──────────────────────────────────────────────────
+    // ─── 노이즈 필터 ────────────────────────────────────────────────────
 
     private fun filterUiNoise(blocks: List<OcrBlock>, sw: Int, sh: Int): List<OcrBlock> {
         return blocks.filter { block ->
@@ -117,26 +76,20 @@ class ChromeOcrTextFormatter @Inject constructor() : OcrTextFormatter {
             val cy   = (box.top + box.bottom) / 2.0
             val text = block.text.trim()
 
-            if (cy < sh * STATUS_BAR_RATIO)                   return@filter false
-            if (cy > sh * (1.0 - BOTTOM_NAV_RATIO))          return@filter false
-            if (text.length == 1)                              return@filter false
-            if (text.matches(Regex("""^[<>+:=|]+$""")))       return@filter false
+            if (cy < sh * STATUS_BAR_RATIO)               return@filter false
+            if (cy > sh * (1.0 - BOTTOM_UI_RATIO))        return@filter false
+            if (text.length == 1)                          return@filter false
+            if ("에게 물어" in text || "Gemini에게" in text) return@filter false
+            if (text.matches(Regex("""^[=≡|.]{1,3}$"""))) return@filter false
 
-            // 주소창 영역: URL 블록만 유지, 탭 카운트·아이콘 제거
-            if (cy < sh * ADDRESS_BAR_BOTTOM_RATIO) {
-                val isUrl     = '.' in text && text.length > 5
-                val isTabCount = text.matches(Regex("""\d{1,2}"""))
-                if (isTabCount) return@filter false
-                return@filter isUrl
-            }
             true
         }
     }
 
     /**
      * 중복 블록 제거
-     * - 같은 영역에 두 블록이 있으면 textQualityScore가 높은 쪽 선택
-     * - [FIX] 짝이 없어도 score < 0이면 즉시 제거 (A]o]l, 29l7]4} 등)
+     * 같은 영역의 블록 중 textQualityScore가 높은 쪽 선택.
+     * 단독이어도 score < MIN_QUALITY_SCORE면 제거.
      */
     private fun deduplicateBlocks(blocks: List<OcrBlock>): List<OcrBlock> {
         val result = mutableListOf<OcrBlock>()
@@ -144,23 +97,18 @@ class ChromeOcrTextFormatter @Inject constructor() : OcrTextFormatter {
 
         for (i in blocks.indices) {
             if (i in used) continue
-            val a     = blocks[i]
-            val boxA  = a.boundingBox ?: continue
-            var best  = a
-            var bestScore = textQualityScore(a.text)
+            val a = blocks[i]; val boxA = a.boundingBox ?: continue
+            var best = a; var bestScore = textQualityScore(a.text)
 
             for (j in i + 1 until blocks.size) {
                 if (j in used) continue
-                val b    = blocks[j]
-                val boxB = b.boundingBox ?: continue
+                val b = blocks[j]; val boxB = b.boundingBox ?: continue
                 if (isSameRegion(boxA, boxB)) {
-                    val scoreB = textQualityScore(b.text)
-                    if (scoreB > bestScore) { bestScore = scoreB; best = b }
+                    val s = textQualityScore(b.text)
+                    if (s > bestScore) { bestScore = s; best = b }
                     used.add(j)
                 }
             }
-
-            // [FIX] 경쟁 블록이 없더라도 score < 0 이면 버림
             if (bestScore >= MIN_QUALITY_SCORE) result.add(best)
             used.add(i)
         }
@@ -168,289 +116,132 @@ class ChromeOcrTextFormatter @Inject constructor() : OcrTextFormatter {
     }
 
     private fun isSameRegion(a: OcrBlock.BoundingBox, b: OcrBlock.BoundingBox): Boolean =
-        abs(a.top - b.top) < DUPLICATE_OVERLAP_PX &&
-        abs(a.bottom - b.bottom) < DUPLICATE_OVERLAP_PX &&
-        abs(a.left - b.left) < DUPLICATE_OVERLAP_PX
+        abs(a.top - b.top) < DUPLICATE_Y_PX &&
+        abs(a.bottom - b.bottom) < DUPLICATE_Y_PX &&
+        abs(a.left - b.left) < DUPLICATE_X_PX
 
     private fun textQualityScore(text: String): Int {
         val korean = text.count { it in '\uAC00'..'\uD7A3' }
         val latin  = text.count { it.isLetter() && it < '\u0100' }
-        val noise  = text.count { !it.isLetterOrDigit() && it !in " .,()%²~-:/\n" }
+        val noise  = text.count { !it.isLetterOrDigit() && it !in " .,()%~-:/·•\n" }
         return korean * 3 + latin * 2 - noise * 4
     }
 
-    // ─── URL 추출 ────────────────────────────────────────────────────────
+    // ─── 모델명 추출 ─────────────────────────────────────────────────────
 
-    private fun extractUrl(blocks: List<OcrBlock>, sh: Int): String? {
-        val urlBlocks = blocks.filter { block ->
-            val cy = block.boundingBox?.let { (it.top + it.bottom) / 2.0 } ?: return@filter false
-            cy < sh * ADDRESS_BAR_BOTTOM_RATIO
-        }
-        if (urlBlocks.isEmpty()) return null
-        val best = urlBlocks.maxByOrNull { textQualityScore(it.text) } ?: return null
-        return cleanUrl(best.text)
-    }
-
-    private fun cleanUrl(raw: String): String =
-        raw
-            .replace(Regex("""^[A-Za-z0-9%\s]{1,4}\s+"""), "")   // 앞 노이즈 (예: "A 5 ", "25 ")
-            .replace(Regex("""\s+[+56]\s*$"""), "")               // 뒤 탭카운트
-            .replace(Regex("""^[:\s]+"""), "")                     // 앞 콜론/공백
-            .trim()
-
-    // ─── A. 블로그/기사 포매터 ──────────────────────────────────────────
-
-    private fun formatBlogArticle(blocks: List<OcrBlock>, url: String?, sh: Int): String {
-        val sb = StringBuilder()
-        sb.appendLine("[Chrome] 웹 페이지")
-        if (url != null) sb.appendLine("URL: $url")
-        sb.appendLine("─".repeat(40))
-
-        val authorBlock = blocks.find {
-            it.text.matches(Regex(""".*\d{4}\.\s*\d{1,2}\.\s*\d{1,2}.*"""))
-        }
-        val authorTopY = authorBlock?.boundingBox?.top ?: Int.MAX_VALUE
-
-        // 제목: URL바 아래 ~ 작성자 블록 위, 의미 있는 텍스트
-        val titleParts = blocks
+    private fun extractModelName(blocks: List<OcrBlock>, sw: Int, sh: Int): String {
+        return blocks
             .filter { block ->
-                val top  = block.boundingBox?.top ?: 0
-                top < authorTopY && isLikelyTitle(block.text)
+                val box = block.boundingBox ?: return@filter false
+                val cy  = (box.top + box.bottom) / 2.0
+                val cx  = (box.left + box.right) / 2.0
+                cy < sh * MODEL_HEADER_BOTTOM_RATIO &&
+                cx > sw * 0.20 && cx < sw * 0.80 &&
+                ("Gemini" in block.text || "Flash" in block.text || "Pro" in block.text)
             }
-            .map { it.text.trim() }
-
-        if (titleParts.isNotEmpty()) {
-            val title = titleParts.joinToString(" ")
-                .replace(Regex("""\s+"""), " ")
-                .trim()
-            sb.appendLine("제목: $title")
-        }
-
-        // 작성자·날짜
-        if (authorBlock != null) {
-            val lines = authorBlock.text.split("\n")
-            if (lines.size >= 2) {
-                sb.appendLine("작성자: ${lines[0].trim()}")
-                sb.appendLine("작성일: ${lines[1].trim()}")
-            } else {
-                val dm = Regex("""(\d{4}\.\s*\d{1,2}\.\s*\d{1,2}.*)""").find(authorBlock.text)
-                val nm = Regex("""^([^\d\n]+)""").find(authorBlock.text)
-                if (nm != null) sb.appendLine("작성자: ${nm.value.trim()}")
-                if (dm != null) sb.appendLine("작성일: ${dm.value.trim()}")
-            }
-        }
-
-        sb.appendLine()
-        sb.appendLine("[본문]")
-
-        val authorBottomY = authorBlock?.boundingBox?.bottom ?: 0
-        blocks
-            .filter { block ->
-                val top  = block.boundingBox?.top ?: 0
-                val text = block.text.trim()
-                top > authorBottomY &&
-                !isSocialInteractionBlock(text) &&
-                !isActionButton(text) &&          // [FIX] 이웃추가 등 버튼 제거
-                text.length > 2
-            }
-            .forEach { block ->
-                block.text.split("\n").forEach { line ->
-                    if (line.trim().length > 2) sb.appendLine(line.trim())
-                }
-            }
-
-        // 소셜 반응
-        val socialBlock = blocks.find { isSocialInteractionBlock(it.text) }
-        if (socialBlock != null) {
-            sb.appendLine()
-            sb.appendLine("[반응] ${parseSocialInteractions(socialBlock.text)}")
-        }
-
-        return sb.toString().trimEnd()
+            .firstOrNull()
+            ?.text
+            ?.trim()
+            ?.replace(Regex("""\s*[▼∨v]\s*$"""), "")
+            ?: "Gemini"
     }
 
-    private fun isLikelyTitle(text: String): Boolean {
-        if (text.matches(Regex(""".*\d{4}\..*"""))) return false
-        if ("naver.com" in text || "blog" in text.lowercase()) return false
-        if (isActionButton(text)) return false       // [FIX] 버튼 텍스트 제목 오인식 방지
-        return text.length > 5
+    // ─── 블록 분류 ───────────────────────────────────────────────────────
+
+    private sealed class GeminiBlock {
+        data class Question(val text: String, val cy: Int) : GeminiBlock()
+        data class Answer(val text: String, val cy: Int, val indentLevel: Int) : GeminiBlock()
     }
 
-    private fun isSocialInteractionBlock(text: String): Boolean =
-        text.matches(Regex(""".*[♡❤♥].*\d+.*""")) ||
-        text.matches(Regex(""".*\d+\s*[)]\s*\d+.*"""))
+    private fun classifyBlocks(blocks: List<OcrBlock>, sw: Int, sh: Int): List<GeminiBlock> {
+        val headerBottomY = (sh * MODEL_HEADER_BOTTOM_RATIO).toInt()
 
-    /** [FIX] "+ 이웃추가", "+ 팔로우" 등 버튼 텍스트 제거 강화 */
-    private fun isActionButton(text: String): Boolean =
-        text.matches(Regex("""^\+\s*(이웃추가|팔로우|구독|Follow)$""")) ||
-        text.matches(Regex("""^이웃추가$"""))
+        return blocks.mapNotNull { block ->
+            val box  = block.boundingBox ?: return@mapNotNull null
+            val text = block.text.trim()
+            val cy   = (box.top + box.bottom) / 2
 
-    private fun parseSocialInteractions(text: String): String {
-        val nums = Regex("""\d+""").findAll(text).map { it.value }.toList()
-        return when {
-            nums.size >= 3 -> "좋아요 ${nums[0]}  댓글 ${nums[1]}  공유 ${nums[2]}"
-            nums.size == 2 -> "좋아요 ${nums[0]}  댓글 ${nums[1]}"
-            else           -> text
+            if (cy < headerBottomY) return@mapNotNull null
+            if (text.length < 2)    return@mapNotNull null
+
+            if (isQuestionBubble(box, text, sw)) GeminiBlock.Question(text, cy)
+            else                                  GeminiBlock.Answer(text, cy, indentLevel(box, sw))
         }
-    }
-
-    // ─── B. 예약/상품 페이지 포매터 ─────────────────────────────────────
-
-    private fun formatBookingProduct(blocks: List<OcrBlock>, url: String?, sh: Int): String {
-        val sb = StringBuilder()
-        sb.appendLine("[Chrome] 웹 페이지")
-        if (url != null) sb.appendLine("URL: $url")
-        sb.appendLine("─".repeat(40))
-
-        val productName = findProductName(blocks, sh)
-        if (productName != null) {
-            sb.appendLine("상품명: $productName")
-            sb.appendLine()
-        }
-
-        val bookingInfo = extractBookingInfo(blocks)
-        if (bookingInfo.isNotEmpty()) {
-            sb.appendLine("[예약 정보]")
-            bookingInfo.forEach { (k, v) -> sb.appendLine("$k: $v") }
-            sb.appendLine()
-        }
-
-        val benefits = extractBenefits(blocks)
-        if (benefits.isNotEmpty()) {
-            sb.appendLine("[혜택/안내]")
-            benefits.forEach { sb.appendLine(it) }
-            sb.appendLine()
-        }
-
-        val formFields = extractFormFields(blocks)
-        if (formFields.isNotEmpty()) {
-            sb.appendLine("[입력 정보]")
-            formFields.forEach { sb.appendLine(it) }
-            sb.appendLine()
-        }
-
-        val price = extractPrice(blocks)
-        if (price != null) {
-            sb.appendLine("[결제]")
-            sb.appendLine("총 금액: $price")
-        }
-
-        return sb.toString().trimEnd()
-    }
-
-    private fun findProductName(blocks: List<OcrBlock>, sh: Int): String? =
-        blocks
-            .filter { block ->
-                val cy = block.boundingBox?.let { (it.top + it.bottom) / 2.0 } ?: 0.0
-                cy in sh * 0.10..sh * 0.40 &&
-                block.text.length > 5 &&
-                !block.text.contains(Regex("""\d{4}년|\d{1,2}월\s*\d{1,2}일"""))
-            }
-            .maxByOrNull { it.text.length }
-            ?.text?.trim()
-
-    private fun extractBookingInfo(blocks: List<OcrBlock>): LinkedHashMap<String, String> {
-        val info    = LinkedHashMap<String, String>()
-        val allText = blocks.joinToString("\n") { it.text }
-
-        Regex("""(\d{1,2}월\s*\d{1,2}일[^~\-\n]*)[~\-](\d{1,2}월\s*\d{1,2}일[^\n]*)""")
-            .find(allText)?.let { info["체크인/아웃"] = it.value.trim() }
-
-        Regex("""객실\s*\d+개\s*[xX]\s*\d+박""")
-            .find(allText)?.let { stay ->
-                info["체크인/아웃"] = info["체크인/아웃"]?.let { "$it / ${stay.value.trim()}" }
-                    ?: stay.value.trim()
-            }
-
-        blocks.find { "룸" in it.text || "room" in it.text.lowercase() || "뷰" in it.text }
-            ?.let { info["객실"] = it.text.trim() }
-
-        val optionParts = blocks
-            .filter { "침대" in it.text || "금연" in it.text || "조식" in it.text || "석식" in it.text }
-            .map { it.text.trim() }
-        if (optionParts.isNotEmpty()) info["옵션"] = optionParts.joinToString(" / ")
-
-        return info
     }
 
     /**
-     * 혜택 섹션 추출
-     * [FIX] 동일 키워드 중복 방지: 같은 카테고리(무료 취소, 할인, 적립)는 첫 번째 블록만 사용
+     * 질문 버블 판별
+     * [FIX] 세 가지 조건을 모두 만족해야 질문으로 판정:
+     *   1. cx > sw * 0.65  (우측 정렬, 기존 0.50에서 상향)
+     *   2. right > sw * 0.85  (버블 오른쪽 끝이 화면 우측에 근접)
+     *   3. blockWidth < sw * 0.70  (답변 텍스트는 거의 풀-위드이므로 좁은 블록만)
+     * 이 세 조건을 조합하면 답변 내 들여쓰기 텍스트가 질문으로 오분류되는 문제 해결
      */
-    private fun extractBenefits(blocks: List<OcrBlock>): List<String> {
-        val result       = mutableListOf<String>()
-        var freeCancelAdded = false
-        var discountAdded   = false
-        var pointAdded      = false
+    private fun isQuestionBubble(box: OcrBlock.BoundingBox, text: String, sw: Int): Boolean {
+        val cx         = (box.left + box.right) / 2.0
+        val blockWidth = box.right - box.left
+        val isCxRight     = cx > sw * QUESTION_CX_THRESHOLD        // [FIX] 0.65
+        val isRightEdge   = box.right > sw * QUESTION_RIGHT_EDGE   // [FIX] right > 85%
+        val isNarrow      = blockWidth < sw * QUESTION_MAX_WIDTH    // [FIX] width < 70%
+        val isShortText   = text.lines().size <= 3 && text.length < 100
+        return isCxRight && isRightEdge && isNarrow && isShortText
+    }
+
+    private fun indentLevel(box: OcrBlock.BoundingBox, sw: Int): Int {
+        val leftRatio = box.left.toDouble() / sw
+        return when {
+            leftRatio < 0.10 -> 0
+            leftRatio < 0.20 -> 1
+            else             -> 2
+        }
+    }
+
+    // ─── 렌더링 ──────────────────────────────────────────────────────────
+
+    private fun render(modelName: String, blocks: List<GeminiBlock>): String {
+        val sb = StringBuilder()
+        sb.appendLine("[Gemini] $modelName")
+        sb.appendLine("─".repeat(40))
+
+        var inAnswer      = false
+        var lastWasQuestion = false
 
         blocks.forEach { block ->
-            val text = block.text.trim()
+            when (block) {
+                is GeminiBlock.Question -> {
+                    if (inAnswer) sb.appendLine()
+                    sb.appendLine()
+                    sb.appendLine("[질문]")
+                    sb.appendLine(block.text)
+                    inAnswer        = false
+                    lastWasQuestion = true
+                }
+                is GeminiBlock.Answer -> {
+                    if (lastWasQuestion) {
+                        sb.appendLine()
+                        sb.appendLine("[답변]")
+                        inAnswer        = true
+                        lastWasQuestion = false
+                    }
+                    val prefix = when (block.indentLevel) {
+                        0    -> ""
+                        1    -> "  • "
+                        else -> "    "
+                    }
+                    val isNumberedHeader = block.text.matches(Regex("""^\d+\.\s+.+"""))
+                    if (isNumberedHeader && block.indentLevel == 0) sb.appendLine()
 
-            if (!freeCancelAdded && "무료 취소" in text && "전" in text) {
-                // "무료 취소" 단독 버튼 블록(짧은 것)은 제외
-                if (text.length > 6) {
-                    val dm = Regex("""\d{1,2}월\s*\d{1,2}일[^\n]*23:59[^\n]*""").find(text)
-                    result.add("무료 취소: ${dm?.value?.trim() ?: text}")
-                    freeCancelAdded = true
+                    block.text.split("\n").forEachIndexed { idx, line ->
+                        val t = line.trim()
+                        if (t.isNotEmpty()) {
+                            val lp = if (idx == 0) prefix else " ".repeat(prefix.length)
+                            sb.appendLine("$lp$t")
+                        }
+                    }
                 }
             }
-
-            if (!discountAdded && "할인" in text && "원" in text) {
-                val am = Regex("""[\d,]+원""").find(text)
-                result.add("할인: ${am?.value ?: text}")
-                discountAdded = true
-            }
-
-            if (!pointAdded && ("트립코인" in text || "포인트" in text || "적립" in text)
-                && text.length > 6) {
-                // 두 블록으로 분리된 경우 합치기
-                val combined = blocks
-                    .filter { "트립코인" in it.text || "상당" in it.text || "적립" in it.text }
-                    .joinToString(" ") { it.text.trim() }
-                    .replace(Regex("""\s+"""), " ")
-                result.add("적립: $combined")
-                pointAdded = true
-            }
         }
-        return result
-    }
 
-    private fun extractFormFields(blocks: List<OcrBlock>): List<String> {
-        val result = mutableListOf<String>()
-        val triggers = listOf("성*", "이름*", "이메일*", "연락처*", "투숙객", "*필수 입력사항")
-        blocks.forEach { block ->
-            val text = block.text.trim()
-            if (triggers.any { text.startsWith(it) || text == it }) result.add(text)
-        }
-        blocks.find { "e.g." in it.text || "예:" in it.text }
-            ?.let { result.add("  ${it.text.trim()}") }
-        return result
-    }
-
-    private fun extractPrice(blocks: List<OcrBlock>): String? {
-        return blocks
-            .filter { it.text.matches(Regex("""[\d,]+[원o]?.*""")) && it.text.length > 4 }
-            .maxByOrNull {
-                Regex("""[\d,]+""").find(it.text)?.value?.replace(",", "")?.toLongOrNull() ?: 0L
-            }
-            ?.text
-            ?.trim()
-            ?.replace(Regex("""[oO]$"""), "원")  // [FIX] OCR 오인식 '원' → 'o' 보정
-    }
-
-    // ─── C. 범용 포매터 ──────────────────────────────────────────────────
-
-    private fun formatGeneric(blocks: List<OcrBlock>, url: String?): String {
-        val sb = StringBuilder()
-        sb.appendLine("[Chrome] 웹 페이지")
-        if (url != null) sb.appendLine("URL: $url")
-        sb.appendLine("─".repeat(40))
-        sb.appendLine()
-        blocks.forEach { block ->
-            block.text.trim().split("\n").forEach { line ->
-                if (line.trim().length > 2) sb.appendLine(line.trim())
-            }
-        }
         return sb.toString().trimEnd()
     }
 
@@ -463,18 +254,26 @@ class ChromeOcrTextFormatter @Inject constructor() : OcrTextFormatter {
         (blocks.maxOfOrNull { it.boundingBox?.bottom ?: 0 } ?: 0) + 200
 
     companion object {
-        const val CHROME_PACKAGE      = "com.android.chrome"
-        const val CHROME_BETA_PACKAGE = "com.chrome.beta"
+        val GEMINI_PACKAGES = setOf(
+            "com.google.android.googlequicksearchbox",
+            "com.google.android.apps.bard",
+            "com.google.android.apps.gemini"
+        )
 
         private const val DEFAULT_SCREEN_WIDTH  = 1080
         private const val DEFAULT_SCREEN_HEIGHT = 2400
 
         private const val STATUS_BAR_RATIO          = 0.04
-        private const val BOTTOM_NAV_RATIO          = 0.07
-        private const val ADDRESS_BAR_BOTTOM_RATIO  = 0.12
+        private const val BOTTOM_UI_RATIO           = 0.12
+        private const val MODEL_HEADER_BOTTOM_RATIO = 0.10
 
-        private const val DUPLICATE_OVERLAP_PX  = 20
-        // [FIX] 단독 블록도 이 값 미만이면 제거 (오인식 잔류 방지)
+        // [FIX] 질문 버블 판별 조건 강화 (기존 단일 cx>0.50 → 3중 조건)
+        private const val QUESTION_CX_THRESHOLD = 0.65   // cx 비율 하한 (기존 0.50)
+        private const val QUESTION_RIGHT_EDGE   = 0.85   // right edge 비율 하한
+        private const val QUESTION_MAX_WIDTH    = 0.70   // block width 비율 상한
+
+        private const val DUPLICATE_Y_PX       = 30
+        private const val DUPLICATE_X_PX       = 40
         private const val MIN_QUALITY_SCORE     = 0
     }
 }
