@@ -6,41 +6,29 @@ import javax.inject.Inject
 import kotlin.math.abs
 
 /**
- * Gemini 앱 OCR → 구조화 텍스트 변환기
+ * KakaoTalk 대화창 OCR → 구조화 텍스트 변환기
  *
  * ## 이상적인 출력 스키마
  * ```
- * [Gemini] Gemini Flash
- * ────────────────────────────────────────
+ * [KakaoTalk 대화]
+ * ──────────────────────────────────────
+ *   ── 2026년 1월 28일 수요일 ──
  *
- * [질문]
- * 스기노이 호텔 주변 맛집
- *
- * [답변]
- * 벳부 스기노이 호텔 주변 및 벳부 시내의 대표적인 맛집을 도보 이동이 가능한 곳과
- * 차량/대중교통으로 가기 좋은 곳으로 나누어 추천해드립니다.
- *
- * 1. 호텔에서 도보 이동 가능한 주변 맛집
- * 스기노이 호텔이 위치한 관해지(Kankaiji) 온천 지대는 고지대에 있어 ...
- *
- *   • 고조 (Gojo / そば処 五条)
- *     특징: 호텔에서 도보로 약 5~10분 거리에 있는 아늑한 소바 및 우동 전문점
- *           (수·목요일 휴무 / 오후 3시까지만 영업)
- *     추천 메뉴: 냉소바, 우동 종류
- *
- *   • 춘코엔 (Shunkoen / 焼肉 春香苑)
+ * [박선주] 오전 11:08  하성 우리 여행 일정 잡아야돼!!
+ * [나]     오전 11:08  숙박이랑 항공은 우선 내가 결제할게.
+ *                      날짜랑 가격대비 어디가 젤 나은지 봐줘.
+ * [박선주] 오전 11:08  오키, 다른 날짜가 더 쌀 수도 있으니까 비교해볼게.
  * ```
  *
- * ## 핵심 수정: 질문 오판정 문제
- * 문제: Gemini 답변 중 들여쓰기 블록들이 cx > 50% 조건에 걸려 [질문]으로 오분류됨
- *       (예: "특징: 호텔에서 도보로 약 5~10분", "메밀소바와 따뜻한 우동을 선보이며...")
- * 원인: Gemini 답변 텍스트가 화면 중앙~우측에 넓게 배치되어 cx 중앙값이 50%를 초과
- * 해결:
- *   1. QUESTION_CX_THRESHOLD 0.50 → 0.65 로 상향 (질문 버블은 우측 정렬이 더 뚜렷함)
- *   2. 질문 버블 추가 조건: width가 화면의 70% 미만 (답변 텍스트는 거의 full-width)
- *   3. 질문 버블 추가 조건: right edge가 화면 우측에 근접 (right > sw * 0.85)
+ * ## 좌표 기반 발신자 판별 전략
+ * - 내 메시지(노란 말풍선): right edge > sw * 0.60
+ * - 상대 메시지(회색 말풍선): right edge <= sw * 0.60
+ * - 타임스탬프: "오전/오후 HH:MM" 패턴
+ * - 날짜 구분선: "YYYY년 M월 D일 요일" 패턴 + 화면 중앙 배치
+ *   → classifyBlocks에서 DateDivider를 Message보다 먼저 검사
+ * - OCR 오인식 노이즈: textQualityScore < NOISE_SCORE_THRESHOLD 인 블록 제거
  */
-class GeminiOcrTextFormatter @Inject constructor() : OcrTextFormatter {
+class KakaoTalkOcrTextFormatter @Inject constructor() : OcrTextFormatter {
 
     override fun format(
         blocks: List<OcrBlock>,
@@ -48,196 +36,340 @@ class GeminiOcrTextFormatter @Inject constructor() : OcrTextFormatter {
         screenWidth: Int,
         screenHeight: Int
     ): String? {
-        if (!isGeminiPackage(packageName)) return null
+        if (packageName != KAKAO_TALK_PACKAGE) return null
         if (blocks.isEmpty()) return null
 
         val sw = if (screenWidth > 0) screenWidth else estimateScreenWidth(blocks)
         val sh = if (screenHeight > 0) screenHeight else estimateScreenHeight(blocks)
 
-        val cleaned = deduplicateBlocks(filterUiNoise(blocks, sw, sh))
-        val sorted  = cleaned.sortedBy { (it.boundingBox?.top ?: 0) + (it.boundingBox?.bottom ?: 0) }
-
-        val modelName  = extractModelName(sorted, sw, sh)
-        val classified = classifyBlocks(sorted, sw, sh)
-
-        return render(modelName, classified)
+        // [FIX] dedup → noise filter 순서: 중복 제거 먼저 해야 좌표 기반 선택이 정확함
+        val dedupedBlocks = deduplicateBlocks(blocks, sw)
+        val roomName      = extractRoomName(dedupedBlocks, sw, sh)
+        val contentBlocks = filterUiNoise(dedupedBlocks, sw, sh)
+        val classified    = classifyBlocks(contentBlocks, sw)
+        val messages      = buildMessages(classified, sw)
+        return renderMessages(messages, roomName)
     }
 
-    // ─── 패키지 판별 ─────────────────────────────────────────────────────
-
-    private fun isGeminiPackage(packageName: String?): Boolean =
-        packageName in GEMINI_PACKAGES
-
-    // ─── 노이즈 필터 ────────────────────────────────────────────────────
-
-    private fun filterUiNoise(blocks: List<OcrBlock>, sw: Int, sh: Int): List<OcrBlock> {
-        return blocks.filter { block ->
-            val box  = block.boundingBox ?: return@filter false
-            val cy   = (box.top + box.bottom) / 2.0
-            val text = block.text.trim()
-
-            if (cy < sh * STATUS_BAR_RATIO)               return@filter false
-            if (cy > sh * (1.0 - BOTTOM_UI_RATIO))        return@filter false
-            if (text.length == 1)                          return@filter false
-            if ("에게 물어" in text || "Gemini에게" in text) return@filter false
-            if (text.matches(Regex("""^[=≡|.]{1,3}$"""))) return@filter false
-
-            true
-        }
-    }
+    // ─── 1. 중복 블록 제거 ───────────────────────────────────────────────
 
     /**
-     * 중복 블록 제거
-     * 같은 영역의 블록 중 textQualityScore가 높은 쪽 선택.
-     * 단독이어도 score < MIN_QUALITY_SCORE면 제거.
+     * 같은 좌표 영역에 두 블록이 존재할 때 품질 점수가 높은 쪽만 남긴다.
+     *
+     * MLKit은 동일 영역을 정상 블록과 오인식 블록 두 개로 반환하는 경우가 있다.
+     * - 일반 블록: score 기준으로 선택
+     * - [FIX] 날짜 구분선 블록: isDateDivider()가 True면 DATE_BONUS 점수를 더해
+     *   오인식 복사본(예: "20264 1 28!R!)")보다 반드시 우선 선택되도록 보장
      */
-    private fun deduplicateBlocks(blocks: List<OcrBlock>): List<OcrBlock> {
+    private fun deduplicateBlocks(blocks: List<OcrBlock>, sw: Int): List<OcrBlock> {
         val result = mutableListOf<OcrBlock>()
         val used   = mutableSetOf<Int>()
 
         for (i in blocks.indices) {
             if (i in used) continue
-            val a = blocks[i]; val boxA = a.boundingBox ?: continue
-            var best = a; var bestScore = textQualityScore(a.text)
+            val a    = blocks[i]
+            val boxA = a.boundingBox ?: continue
+            var best      = a
+            var bestScore = scoreForDedup(a, sw)
 
             for (j in i + 1 until blocks.size) {
                 if (j in used) continue
-                val b = blocks[j]; val boxB = b.boundingBox ?: continue
+                val b    = blocks[j]
+                val boxB = b.boundingBox ?: continue
                 if (isSameRegion(boxA, boxB)) {
-                    val s = textQualityScore(b.text)
+                    val s = scoreForDedup(b, sw)
                     if (s > bestScore) { bestScore = s; best = b }
                     used.add(j)
                 }
             }
-            if (bestScore >= MIN_QUALITY_SCORE) result.add(best)
+            result.add(best)
             used.add(i)
         }
         return result
     }
 
+    private fun scoreForDedup(block: OcrBlock, sw: Int): Int {
+        val base = textQualityScore(block.text)
+        val box  = block.boundingBox ?: return base
+        val cx   = (box.left + box.right) / 2
+        // [FIX] DateDivider 블록에 보너스 점수 부여 → 오인식 복사본보다 항상 우선 선택
+        val dateBonus = if (isDateDivider(block.text, cx, sw)) DATE_BONUS else 0
+        return base + dateBonus
+    }
+
     private fun isSameRegion(a: OcrBlock.BoundingBox, b: OcrBlock.BoundingBox): Boolean =
-        abs(a.top - b.top) < DUPLICATE_Y_PX &&
-        abs(a.bottom - b.bottom) < DUPLICATE_Y_PX &&
-        abs(a.left - b.left) < DUPLICATE_X_PX
+        abs(a.top    - b.top)    < DUPLICATE_OVERLAP_PX &&
+        abs(a.bottom - b.bottom) < DUPLICATE_OVERLAP_PX &&
+        abs(a.left   - b.left)   < DUPLICATE_OVERLAP_PX
 
-    private fun textQualityScore(text: String): Int {
-        val korean = text.count { it in '\uAC00'..'\uD7A3' }
-        val latin  = text.count { it.isLetter() && it < '\u0100' }
-        val noise  = text.count { !it.isLetterOrDigit() && it !in " .,()%~-:/·•\n" }
-        return korean * 3 + latin * 2 - noise * 4
-    }
-
-    // ─── 모델명 추출 ─────────────────────────────────────────────────────
-
-    private fun extractModelName(blocks: List<OcrBlock>, sw: Int, sh: Int): String {
-        return blocks
-            .filter { block ->
-                val box = block.boundingBox ?: return@filter false
-                val cy  = (box.top + box.bottom) / 2.0
-                val cx  = (box.left + box.right) / 2.0
-                cy < sh * MODEL_HEADER_BOTTOM_RATIO &&
-                cx > sw * 0.20 && cx < sw * 0.80 &&
-                ("Gemini" in block.text || "Flash" in block.text || "Pro" in block.text)
-            }
-            .firstOrNull()
-            ?.text
-            ?.trim()
-            ?.replace(Regex("""\s*[▼∨v]\s*$"""), "")
-            ?: "Gemini"
-    }
-
-    // ─── 블록 분류 ───────────────────────────────────────────────────────
-
-    private sealed class GeminiBlock {
-        data class Question(val text: String, val cy: Int) : GeminiBlock()
-        data class Answer(val text: String, val cy: Int, val indentLevel: Int) : GeminiBlock()
-    }
-
-    private fun classifyBlocks(blocks: List<OcrBlock>, sw: Int, sh: Int): List<GeminiBlock> {
-        val headerBottomY = (sh * MODEL_HEADER_BOTTOM_RATIO).toInt()
-
-        return blocks.mapNotNull { block ->
-            val box  = block.boundingBox ?: return@mapNotNull null
-            val text = block.text.trim()
-            val cy   = (box.top + box.bottom) / 2
-
-            if (cy < headerBottomY) return@mapNotNull null
-            if (text.length < 2)    return@mapNotNull null
-
-            if (isQuestionBubble(box, text, sw)) GeminiBlock.Question(text, cy)
-            else                                  GeminiBlock.Answer(text, cy, indentLevel(box, sw))
-        }
-    }
+    // ─── 2. UI 노이즈 필터링 ────────────────────────────────────────────
 
     /**
-     * 질문 버블 판별
-     * [FIX] 세 가지 조건을 모두 만족해야 질문으로 판정:
-     *   1. cx > sw * 0.65  (우측 정렬, 기존 0.50에서 상향)
-     *   2. right > sw * 0.85  (버블 오른쪽 끝이 화면 우측에 근접)
-     *   3. blockWidth < sw * 0.70  (답변 텍스트는 거의 풀-위드이므로 좁은 블록만)
-     * 이 세 조건을 조합하면 답변 내 들여쓰기 텍스트가 질문으로 오분류되는 문제 해결
+     * 대화방 이름 추출
+     *
+     * KakaoTalk 헤더 레이아웃:
+     *   [← 뒤로가기]  [대화방 이름 - 중앙]  [검색/메뉴 아이콘]
+     *
+     * 두 가지 OCR 패턴 처리:
+     *   A) "박선주" — 이름만 독립 블록, cx가 화면 중앙 근처
+     *   B) "←박선주" — 뒤로가기와 이름이 합쳐진 블록, '←' 제거 후 추출
      */
-    private fun isQuestionBubble(box: OcrBlock.BoundingBox, text: String, sw: Int): Boolean {
-        val cx         = (box.left + box.right) / 2.0
-        val blockWidth = box.right - box.left
-        val isCxRight     = cx > sw * QUESTION_CX_THRESHOLD        // [FIX] 0.65
-        val isRightEdge   = box.right > sw * QUESTION_RIGHT_EDGE   // [FIX] right > 85%
-        val isNarrow      = blockWidth < sw * QUESTION_MAX_WIDTH    // [FIX] width < 70%
-        val isShortText   = text.lines().size <= 3 && text.length < 100
-        return isCxRight && isRightEdge && isNarrow && isShortText
+    private fun extractRoomName(blocks: List<OcrBlock>, sw: Int, sh: Int): String? {
+        val headerBlocks = blocks.filter { block ->
+            val box = block.boundingBox ?: return@filter false
+            val cy  = (box.top + box.bottom) / 2.0
+            cy > sh * STATUS_BAR_RATIO && cy < sh * HEADER_BOTTOM_RATIO
+        }
+
+        // 패턴 B: "←이름" 형태의 합성 블록
+        headerBlocks.forEach { block ->
+            val text = block.text.trim()
+            if (text.startsWith("←")) {
+                val name = text.removePrefix("←").trim()
+                if (name.isNotEmpty() && name.length <= 20) return name
+            }
+        }
+
+        // 패턴 A: 중앙에 단독으로 위치한 이름 블록
+        // cx가 sw * 0.15 ~ 0.70 범위이고, 좌측 아이콘(←)보다 오른쪽에 있는 짧은 텍스트
+        return headerBlocks
+            .filter { block ->
+                val box  = block.boundingBox ?: return@filter false
+                val cx   = (box.left + box.right) / 2.0
+                val text = block.text.trim()
+                cx > sw * 0.15 && cx < sw * 0.70 &&
+                text.length in 1..20 &&
+                !text.matches(Regex("""^\d{1,2}:\d{2}.*""")) &&   // 시간 제외
+                !text.matches(Regex("""^[.l\d\s]+$"""))            // 배터리/신호 노이즈 제외
+            }
+            .minByOrNull { block ->
+                // 화면 중앙(sw/2)에 가장 가까운 블록 선택
+                val cx = ((block.boundingBox?.left ?: 0) + (block.boundingBox?.right ?: 0)) / 2
+                Math.abs(cx - sw / 2)
+            }
+            ?.text?.trim()
     }
 
-    private fun indentLevel(box: OcrBlock.BoundingBox, sw: Int): Int {
-        val leftRatio = box.left.toDouble() / sw
-        return when {
-            leftRatio < 0.10 -> 0
-            leftRatio < 0.20 -> 1
-            else             -> 2
+    private fun filterUiNoise(blocks: List<OcrBlock>, sw: Int, sh: Int): List<OcrBlock> {
+        return blocks.filter { block ->
+            val box = block.boundingBox ?: return@filter false
+            val cy = (box.top + box.bottom) / 2.0
+
+            if (cy < sh * STATUS_BAR_RATIO) return@filter false
+            if (cy > sh * (1.0 - BOTTOM_BAR_RATIO)) return@filter false
+
+            val text = block.text.trim()
+
+            // 단일 아이콘 제거
+            if (text.length == 1) return@filter false
+
+            // [FIX] OCR 오인식 노이즈 제거: quality score 임계값 적용
+            // 한글 비율이 낮고 특수문자가 많은 블록(e.g. "20264 1 28!R!)", "2A11:08") 제거
+            if (textQualityScore(text) < NOISE_SCORE_THRESHOLD) return@filter false
+
+            true
         }
     }
 
-    // ─── 렌더링 ──────────────────────────────────────────────────────────
+    // ─── 품질 점수 ───────────────────────────────────────────────────────
 
-    private fun render(modelName: String, blocks: List<GeminiBlock>): String {
+    /**
+     * 텍스트 품질 점수: 한글·영문 비중이 높을수록 높고, 특수문자 노이즈가 많을수록 낮아짐.
+     * 임계값(NOISE_SCORE_THRESHOLD=3) 미만이면 OCR 오인식 블록으로 간주하고 버림.
+     */
+    private fun textQualityScore(text: String): Int {
+        val korean  = text.count { it in '\uAC00'..'\uD7A3' }
+        val latin   = text.count { it.isLetter() && it < '\u0100' }
+        val digits  = text.count { it.isDigit() }
+        val noise   = text.count { !it.isLetterOrDigit() && it !in " .,:()!?~\n" }
+        return korean * 3 + latin * 2 + digits - noise * 5
+    }
+
+    // ─── 2. 블록 분류 ────────────────────────────────────────────────────
+
+    private sealed class BlockType {
+        data class DateDivider(val text: String, val cy: Int) : BlockType()
+        data class SenderName(val name: String, val cy: Int, val cx: Int) : BlockType()
+        data class Timestamp(val time: String, val cy: Int, val cx: Int) : BlockType()
+        data class Message(val text: String, val cy: Int, val cx: Int, val right: Int) : BlockType()
+    }
+
+    private fun classifyBlocks(blocks: List<OcrBlock>, sw: Int): List<BlockType> {
+        return blocks.mapNotNull { block ->
+            val box = block.boundingBox ?: return@mapNotNull null
+            val text = block.text.trim()
+            val cy = (box.top + box.bottom) / 2
+            val cx = (box.left + box.right) / 2
+
+            // [FIX] DateDivider를 Timestamp·Message보다 먼저 검사
+            // 날짜 패턴 블록이 message로 흘러들어가는 오분류 방지
+            when {
+                isDateDivider(text, cx, sw) ->
+                    BlockType.DateDivider(cleanDateText(text), cy)
+
+                isTimestamp(text) ->
+                    BlockType.Timestamp(normalizeTimestamp(text), cy, cx)
+
+                isSenderName(text, box, sw) ->
+                    BlockType.SenderName(text, cy, cx)
+
+                isMessageText(text) ->
+                    BlockType.Message(text, cy, cx, box.right)
+
+                else -> null
+            }
+        }
+    }
+
+    private fun isDateDivider(text: String, cx: Int, sw: Int): Boolean {
+        val isCentered = cx > sw * 0.30 && cx < sw * 0.70
+        return isCentered && (
+            text.matches(Regex("""\d{4}년\s*\d{1,2}월\s*\d{1,2}일.*""")) ||
+            text.contains("요일")
+        )
+    }
+
+    private fun isTimestamp(text: String): Boolean {
+        return text.matches(Regex("""오[전후]\s*\d{1,2}:\d{2}""")) ||
+               text.matches(Regex("""^\d{1,2}:\d{2}$"""))
+    }
+
+    private fun isSenderName(text: String, box: OcrBlock.BoundingBox?, sw: Int): Boolean {
+        if (box == null) return false
+        val isLeft    = box.left < sw * 0.35
+        val isShort   = text.length in 2..8
+        val noDigits  = !text.any { it.isDigit() }
+        val noSpecial = !text.contains(Regex("""[\[\](){}=+!?]"""))
+        return isLeft && isShort && noDigits && noSpecial
+    }
+
+    private fun isMessageText(text: String): Boolean {
+        return text.length >= 2 && !text.matches(Regex("""[0-9:. ]+"""))
+    }
+
+    // ─── 3. 대화 메시지 재구성 ──────────────────────────────────────────
+
+    private data class ChatMessage(
+        val sender: String,
+        val time: String,
+        val text: String,
+        val topY: Int
+    )
+
+    private fun buildMessages(classified: List<BlockType>, sw: Int): List<Any> {
+        val sorted = classified.sortedBy { block ->
+            when (block) {
+                is BlockType.DateDivider -> block.cy
+                is BlockType.SenderName  -> block.cy
+                is BlockType.Timestamp   -> block.cy
+                is BlockType.Message     -> block.cy
+            }
+        }
+
+        val messages      = sorted.filterIsInstance<BlockType.Message>()
+        val timestamps    = sorted.filterIsInstance<BlockType.Timestamp>()
+        val senderNames   = sorted.filterIsInstance<BlockType.SenderName>()
+        val dateDividers  = sorted.filterIsInstance<BlockType.DateDivider>()
+
+        val result = mutableListOf<Any>()
+        dateDividers.forEach { result.add(it.text) }
+
+        val usedTimestamps = mutableSetOf<Int>()
+        val messageGroups  = groupMessageBlocks(messages, sw)
+
+        messageGroups.forEach { group ->
+            val firstBlock = group.first()
+            val isMyMessage = firstBlock.right > sw * MY_MESSAGE_RIGHT_RATIO
+
+            val nearestTs = findNearestTimestamp(timestamps, firstBlock.cy, usedTimestamps)
+            nearestTs?.let { usedTimestamps.add(it.cy) }
+
+            val sender = if (isMyMessage) "나"
+                         else findNearestSenderName(senderNames, firstBlock.cy)?.name ?: "상대방"
+
+            result.add(
+                ChatMessage(
+                    sender = sender,
+                    time   = nearestTs?.time ?: "",
+                    text   = group.joinToString("\n") { it.text },
+                    topY   = firstBlock.cy
+                )
+            )
+        }
+
+        return result.sortedBy { item ->
+            when (item) {
+                is String      -> dateDividers.find { it.text == item }?.cy ?: 0
+                is ChatMessage -> item.topY
+                else           -> 0
+            }
+        }
+    }
+
+    private fun groupMessageBlocks(
+        messages: List<BlockType.Message>,
+        sw: Int
+    ): List<List<BlockType.Message>> {
+        if (messages.isEmpty()) return emptyList()
+
+        val groups = mutableListOf<MutableList<BlockType.Message>>()
+        var current = mutableListOf(messages.first())
+        var currentSide = messages.first().right > sw * MY_MESSAGE_RIGHT_RATIO
+
+        for (i in 1 until messages.size) {
+            val msg     = messages[i]
+            val msgSide = msg.right > sw * MY_MESSAGE_RIGHT_RATIO
+            val gap     = msg.cy - current.last().cy
+
+            if (msgSide == currentSide && gap < MESSAGE_MERGE_GAP_PX) {
+                current.add(msg)
+            } else {
+                groups.add(current)
+                current     = mutableListOf(msg)
+                currentSide = msgSide
+            }
+        }
+        groups.add(current)
+        return groups
+    }
+
+    private fun findNearestTimestamp(
+        timestamps: List<BlockType.Timestamp>,
+        cy: Int,
+        used: Set<Int>
+    ): BlockType.Timestamp? =
+        timestamps
+            .filter { it.cy !in used }
+            .minByOrNull { abs(it.cy - cy) }
+            ?.takeIf { abs(it.cy - cy) < TIMESTAMP_SEARCH_RANGE_PX }
+
+    private fun findNearestSenderName(
+        names: List<BlockType.SenderName>,
+        cy: Int
+    ): BlockType.SenderName? =
+        names
+            .filter { it.cy < cy }
+            .minByOrNull { cy - it.cy }
+            ?.takeIf { cy - it.cy < SENDER_NAME_SEARCH_RANGE_PX }
+
+    // ─── 4. 렌더링 ──────────────────────────────────────────────────────
+
+    private fun renderMessages(messages: List<Any>, roomName: String?): String {
         val sb = StringBuilder()
-        sb.appendLine("[Gemini] $modelName")
+        val header = if (roomName != null) "[KakaoTalk] $roomName" else "[KakaoTalk 대화]"
+        sb.appendLine(header)
         sb.appendLine("─".repeat(40))
 
-        var inAnswer      = false
-        var lastWasQuestion = false
-
-        blocks.forEach { block ->
-            when (block) {
-                is GeminiBlock.Question -> {
-                    if (inAnswer) sb.appendLine()
+        messages.forEach { item ->
+            when (item) {
+                is String -> {
                     sb.appendLine()
-                    sb.appendLine("[질문]")
-                    sb.appendLine(block.text)
-                    inAnswer        = false
-                    lastWasQuestion = true
+                    sb.appendLine("  ── $item ──")
+                    sb.appendLine()
                 }
-                is GeminiBlock.Answer -> {
-                    if (lastWasQuestion) {
-                        sb.appendLine()
-                        sb.appendLine("[답변]")
-                        inAnswer        = true
-                        lastWasQuestion = false
-                    }
-                    val prefix = when (block.indentLevel) {
-                        0    -> ""
-                        1    -> "  • "
-                        else -> "    "
-                    }
-                    val isNumberedHeader = block.text.matches(Regex("""^\d+\.\s+.+"""))
-                    if (isNumberedHeader && block.indentLevel == 0) sb.appendLine()
-
-                    block.text.split("\n").forEachIndexed { idx, line ->
-                        val t = line.trim()
-                        if (t.isNotEmpty()) {
-                            val lp = if (idx == 0) prefix else " ".repeat(prefix.length)
-                            sb.appendLine("$lp$t")
-                        }
-                    }
+                is ChatMessage -> {
+                    val timeStr = if (item.time.isNotEmpty()) " ${item.time}" else ""
+                    sb.appendLine("[${item.sender}]$timeStr  ${item.text}")
                 }
             }
         }
@@ -253,27 +385,34 @@ class GeminiOcrTextFormatter @Inject constructor() : OcrTextFormatter {
     private fun estimateScreenHeight(blocks: List<OcrBlock>): Int =
         (blocks.maxOfOrNull { it.boundingBox?.bottom ?: 0 } ?: 0) + 200
 
+    private fun cleanDateText(text: String): String =
+        text.replace(Regex("""\s*>\s*$"""), "").trim()
+
+    private fun normalizeTimestamp(text: String): String =
+        text.replace(Regex("""\s+"""), " ").trim()
+
     companion object {
-        val GEMINI_PACKAGES = setOf(
-            "com.google.android.googlequicksearchbox",
-            "com.google.android.apps.bard",
-            "com.google.android.apps.gemini"
-        )
+        const val KAKAO_TALK_PACKAGE = "com.kakao.talk"
 
         private const val DEFAULT_SCREEN_WIDTH  = 1080
         private const val DEFAULT_SCREEN_HEIGHT = 2400
 
-        private const val STATUS_BAR_RATIO          = 0.04
-        private const val BOTTOM_UI_RATIO           = 0.12
-        private const val MODEL_HEADER_BOTTOM_RATIO = 0.10
+        private const val STATUS_BAR_RATIO  = 0.06
+        private const val BOTTOM_BAR_RATIO  = 0.10
+        // 헤더(대화방 이름) 탐색 영역: 상태바 아래 ~ 화면 높이의 10%
+        private const val HEADER_BOTTOM_RATIO = 0.10
 
-        // [FIX] 질문 버블 판별 조건 강화 (기존 단일 cx>0.50 → 3중 조건)
-        private const val QUESTION_CX_THRESHOLD = 0.65   // cx 비율 하한 (기존 0.50)
-        private const val QUESTION_RIGHT_EDGE   = 0.85   // right edge 비율 하한
-        private const val QUESTION_MAX_WIDTH    = 0.70   // block width 비율 상한
+        private const val MY_MESSAGE_RIGHT_RATIO   = 0.60
+        private const val MESSAGE_MERGE_GAP_PX     = 120
+        private const val TIMESTAMP_SEARCH_RANGE_PX   = 300
+        private const val SENDER_NAME_SEARCH_RANGE_PX = 200
 
-        private const val DUPLICATE_Y_PX       = 30
-        private const val DUPLICATE_X_PX       = 40
-        private const val MIN_QUALITY_SCORE     = 0
+        // [FIX] OCR 오인식 블록 제거 임계값: 이 값 미만이면 노이즈로 간주
+        private const val NOISE_SCORE_THRESHOLD = 3
+
+        // dedup: 같은 좌표로 판정할 y/x 오차 허용치 (px)
+        private const val DUPLICATE_OVERLAP_PX = 25
+        // dedup: DateDivider 블록에 부여하는 보너스 점수 (오인식 복사본보다 항상 우선 선택)
+        private const val DATE_BONUS = 50
     }
 }
